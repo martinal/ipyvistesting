@@ -12,14 +12,17 @@
     "jupyter",
     "widgets",
     "ipython",
-    "ipywidgets"
+    "ipywidgets",
+    "pythreejs"
   ],
   "scripts": {
     "prepublish": "webpack",
+    "watch": "onchange 'src/*.js' -v -- npm run prepublish",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "devDependencies": {
     "json-loader": "^0.5.4",
+    "onchange": "^3.2.1",
     "webpack": "^1.12.14"
   },
   "dependencies": {
@@ -27,3 +30,4 @@
     "underscore": "^1.8.3"
   }
 }
+
