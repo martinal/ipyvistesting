@@ -39,7 +39,7 @@ module.exports = [
         module: {
             loaders: loaders
         },
-        externals: ['jupyter-js-widgets']
+        externals: ['jupyter-js-widgets', 'jupyter-threejs']
     },
     {// Embeddable juypter-volren-widget bundle
      //
@@ -66,6 +66,6 @@ module.exports = [
         module: {
             loaders: loaders
         },
-        externals: ['jupyter-js-widgets']
+        externals: ['jupyter-js-widgets', 'jupyter-threejs']
     }
 ];

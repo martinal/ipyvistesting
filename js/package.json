@@ -26,8 +26,9 @@
     "webpack": "^1.12.14"
   },
   "dependencies": {
-    "jupyter-js-widgets": "^1.1.1",
+    "jupyter-js-widgets": "^2.0.17",
+    "jupyter-threejs": "^0.1.4",
+    "three": "^0.75.0",
     "underscore": "^1.8.3"
   }
 }
-
