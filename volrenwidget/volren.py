@@ -1,24 +1,32 @@
 import ipywidgets as widgets
-from traitlets import Unicode, Integer, Float, Bool, Bytes
+from traitlets import Unicode, Integer, Float, Bool, Bytes, Any
 import pythreejs
 
 
-npm_module_name = 'juypter-volren-widget'
+# TODO: Avoid duplicate definition here and in __init__.py:
+npm_package_name = 'juypter-volren-widget'
+npm_package_version = '0.1.0'
 
 
+# FIXME: Replace this with new array support in ipywidgets
 # TODO: Initially use a robust version of Array with to_json
 # TODO: Later optimize using views properly
 Float32Buffer = Bytes
-Int32Buffer = Bytes
+Uint32Buffer = Bytes
+#Float32Buffer = Any
+#Uint32Buffer = Any
 
 
 @widgets.register('volrenwidget.VolRenMaterial')
 class VolRenMaterial(pythreejs.Material):
     """A prototype volume rendering widget."""
+    # Required attributes
     _view_name = Unicode('VolRenMaterialView').tag(sync=True)
     _model_name = Unicode('VolRenMaterialModel').tag(sync=True)
-    _view_module = Unicode(npm_module_name).tag(sync=True)
-    _model_module = Unicode(npm_module_name).tag(sync=True)
+    _view_module = Unicode(npm_package_name).tag(sync=True)
+    _model_module = Unicode(npm_package_name).tag(sync=True)
+    _view_module_version = Unicode(npm_package_version).tag(sync=True)
+    _model_module_version = Unicode(npm_package_version).tag(sync=True)
 
     # Shaders
     vertexShader = Unicode().tag(sync=True)
@@ -35,17 +43,20 @@ class VolRenMaterial(pythreejs.Material):
 @widgets.register('volrenwidget.VolRenGeometry')
 class VolRenGeometry(pythreejs.Geometry):
     """A prototype volume rendering widget."""
+    # Required attributes
     _view_name = Unicode('VolRenGeometryView').tag(sync=True)
     _model_name = Unicode('VolRenGeometryModel').tag(sync=True)
-    _view_module = Unicode(npm_module_name).tag(sync=True)
-    _model_module = Unicode(npm_module_name).tag(sync=True)
+    _view_module = Unicode(npm_package_name).tag(sync=True)
+    _model_module = Unicode(npm_package_name).tag(sync=True)
+    _view_module_version = Unicode(npm_package_version).tag(sync=True)
+    _model_module_version = Unicode(npm_package_version).tag(sync=True)
 
     # TODO: Hold updates to rendering while this is true
     #hold = Bool(True).tag(sync=True)
 
     # Geometry
     vertices = Float32Buffer().tag(sync=True)
-    triangles = Int32Buffer().tag(sync=True)
+    triangles = Uint32Buffer().tag(sync=True)
 
     # Attributes
     # TODO: Allow fully customized attributes dict?

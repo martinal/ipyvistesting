@@ -1,30 +1,32 @@
-define(["jupyter-js-widgets", "underscore", "jupyter-threejs"],
-function(widgets, _, p3js) {
-    var npm_module_name = 'juypter-volren-widget';
+define(["jupyter-js-widgets", "underscore", "jupyter-threejs", "ndarray"],
+function(widgets, _, p3js, ndarray) {
+    // Get the three.js library set by pythreejs
+    var THREE = window.THREE;
 
-    // Extracting some things from pythreejs
-    var THREE = window.THREE;  // set by pythreejs
-    var ThreeView = p3js.ThreeView;
-    var MaterialModel = p3js.MaterialModel;
-    // Duplicating GeometryModel class because it's not exported...
+    // Our package name and version
+    var npm_package_name = 'juypter-volren-widget';
+    var npm_package_version = '0.1.0';
+
+
+    // FIXME: GeometryModel class is not exported from pythreejs,
+    //        at some point this was a problem but now it seems
+    //        to work fine to use WidgetModel instead?
     //var GeometryModel = p3js.GeometryModel;
-    var GeometryModel = widgets.WidgetModel.extend({
-        defaults: _.extend({}, widgets.WidgetModel.prototype.defaults, {
-            _model_module: 'jupyter-threejs',
-            _view_module: 'jupyter-threejs',
-            _model_name: 'GeometryModel',
-            _view_name: 'GeometryView'
-        })
-    });
+    var GeometryModel = widgets.WidgetModel;
+
 
     // Our custom material model, this holds shaders and uniforms
-    var VolRenMaterialModel = MaterialModel.extend({
-        defaults: _.extend({}, MaterialModel.prototype.defaults, {
+    var VolRenMaterialModel = p3js.MaterialModel.extend({
+        defaults: _.extend(_.result(this, 'p3js.MaterialModel.prototype.defaults'), {
+            // Required Model attributes
             _model_name : 'VolRenMaterialModel',
             _view_name : 'VolRenMaterialView',
-            _model_module : npm_module_name,
-            _view_module : npm_module_name,
+            _model_module : npm_package_name,
+            _view_module : npm_package_name,
+            _model_module_version: npm_package_version,
+            _view_module_version: npm_package_version,
 
+            // Additional Model attributes
             // Note: Members here should match model in python code,
             // defaults and expected types are defined there
 
@@ -36,18 +38,22 @@ function(widgets, _, p3js) {
             // Uniforms
             time  : 0.0,
             f_min : 0.0,
-            f_max : 1.0,
+            f_max : 1.0
         })
     });
 
     // Our custom geometry model, this holds mesh and attributes
     var VolRenGeometryModel = GeometryModel.extend({
-        defaults: _.extend({}, GeometryModel.prototype.defaults, {
+        defaults: _.extend(_.result(this, 'GeometryModel.prototype.defaults'), {
+            // Required Model attributes
             _model_name : 'VolRenGeometryModel',
             _view_name : 'VolRenGeometryView',
-            _model_module : npm_module_name,
-            _view_module : npm_module_name,
+            _model_module : npm_package_name,
+            _view_module : npm_package_name,
+            _model_module_version: npm_package_version,
+            _view_module_version: npm_package_version,
 
+            // Additional Model attributes
             // Note: Members here should match model in python code,
             // defaults and expected types are defined there
 
@@ -60,12 +66,12 @@ function(widgets, _, p3js) {
             f_front : undefined,
             f_back : undefined,
             s_front : undefined,
-            s_back : undefined,
+            s_back : undefined
         })
     });
 
     // View object mapping material model to THREE.ShaderMaterial object
-    var VolRenMaterialView = ThreeView.extend({
+    var VolRenMaterialView = p3js.ThreeView.extend({
         update: function() {
             console.log("material update: top");
             // TODO: When is this called?
@@ -103,7 +109,7 @@ function(widgets, _, p3js) {
     });
 
     // View object mapping geometry model to THREE.BufferGeometry object
-    var VolRenGeometryView = ThreeView.extend({
+    var VolRenGeometryView = p3js.ThreeView.extend({
         update: function() {
             // TODO: When is this called?
             // TODO: Allow updating everything before recreating material.
@@ -143,6 +149,7 @@ function(widgets, _, p3js) {
         }
     });
 
+    // Export API
     return {
         VolRenMaterialModel : VolRenMaterialModel,
         VolRenMaterialView : VolRenMaterialView,

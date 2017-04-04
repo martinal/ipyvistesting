@@ -1,8 +1,9 @@
 {
   "name": "juypter-volren-widget",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "A Jupyter Widget for Volume Rendering with WebGL",
   "author": "Martin Sandve Alnæs",
+  "license": "BSD-3-Clause",
   "main": "src/index.js",
   "repository": {
     "type": "git",
@@ -23,11 +24,12 @@
   "devDependencies": {
     "json-loader": "^0.5.4",
     "onchange": "^3.2.1",
-    "webpack": "^1.12.14"
+    "webpack": "^1.14.0"
   },
   "dependencies": {
-    "jupyter-js-widgets": "^2.0.17",
-    "jupyter-threejs": "^0.1.4",
+    "jupyter-js-widgets": "^2.1.4",
+    "jupyter-threejs": "^0.2.0",
+    "ndarray": "^1.0.18",
     "three": "^0.75.0",
     "underscore": "^1.8.3"
   }
