@@ -15,6 +15,35 @@ function(widgets, _, p3js, ndarray) {
     var GeometryModel = widgets.WidgetModel;
 
 
+    /// FIXME: Copied from pythreejs
+    var typesToArray = {
+        int8: Int8Array,
+        int16: Int16Array,
+        int32: Int32Array,
+        uint8: Uint8Array,
+        uint16: Uint16Array,
+        uint32: Uint32Array,
+        float32: Float32Array,
+        float64: Float64Array
+    }
+
+    /// FIXME: Copied from pythreejs
+    var JSONToArray = function(obj, manager) {
+        // obj is {shape: list, dtype: string, array: DataView}
+        // return an ndarray object
+        return ndarray(new typesToArray[obj.dtype](obj.buffer.buffer), obj.shape);
+    }
+
+    /// FIXME: Copied from pythreejs
+    var arrayToJSON = function(obj, manager) {
+        // serialize to {shape: list, dtype: string, array: buffer}
+        return {shape: obj.shape, dtype: obj.dtype, buffer: obj.data}
+    }
+
+    /// FIXME: Copied from pythreejs
+    var array_serialization = { deserialize: JSONToArray, serialize: arrayToJSON };
+
+
     // Our custom material model, this holds shaders and uniforms
     var VolRenMaterialModel = p3js.MaterialModel.extend({
         defaults: _.extend(_.result(this, 'p3js.MaterialModel.prototype.defaults'), {
@@ -58,15 +87,23 @@ function(widgets, _, p3js, ndarray) {
             // defaults and expected types are defined there
 
             // Geometry
-            vertices : undefined,
-            triangles : undefined,
+            position: ndarray(new Float32Array(), [0, 3]),
+            faces: ndarray(new Uint32Array(), [0, 3]),
 
             // TODO: Customizable set of attributes
             // Attributes
-            f_front : undefined,
-            f_back : undefined,
-            s_front : undefined,
-            s_back : undefined
+            f_front : ndarray(new Float32Array(), [0, 1]),
+            f_back : ndarray(new Float32Array(), [0, 1]),
+            s_front : ndarray(new Float32Array(), [0, 1]),
+            s_back : ndarray(new Float32Array(), [0, 1]),
+        }),
+        serializers: _.extend(GeometryModel.serializers, {
+            position: array_serialization,
+            faces:    array_serialization,
+            f_front:  array_serialization,
+            f_back:   array_serialization,
+            s_front:  array_serialization,
+            s_back:   array_serialization,
         })
     });
 
@@ -111,40 +148,39 @@ function(widgets, _, p3js, ndarray) {
     // View object mapping geometry model to THREE.BufferGeometry object
     var VolRenGeometryView = p3js.ThreeView.extend({
         update: function() {
-            // TODO: When is this called?
-            // TODO: Allow updating everything before recreating material.
-            // TODO: Allow updating only specific attribute values without recreating material.
+            // TODO: Implement more efficient partial attribute updates
 
-            // Setup triangle index array
-            var triangles = new Uint32Array(this.model.get('triangles').buffer);
-
-            // Setup vertex coordinate array
-            var vertex_components = 3;  // TODO: Might be 2, configure or detect?
-            var vertices = new Float32Array(this.model.get('vertices').buffer);
-
-            // Create geometry and connect data to it
             var geometry = new THREE.BufferGeometry();
-            geometry.setIndex(new THREE.BufferAttribute(triangles, 1));
-            console.log("  triangles:", triangles);
-			geometry.addAttribute('position',
-                new THREE.BufferAttribute(vertices, vertex_components));
-            console.log("  vertices:", vertices);
+
+            var position = this.model.get('position');
+            console.log("position", position);
+            var position_array = new Float32Array(position.buffer.buffer);
+            console.log("position_array", position_array);
+            geometry.addAttribute('position', new THREE.BufferAttribute(position_array, 3));
+
+            var faces = this.model.get('faces');
+            var faces_array = new Uint32Array(faces.buffer.buffer);
+            console.log("faces_array", faces_array);
+            geometry.setIndex(new THREE.BufferAttribute(faces_array, 1));
 
             // Try to add some other attributes if defined
-            console.log("geometry update: attributes");
             // TODO: Make this more configurable somehow, e.g. {"f_front": ["float32", 1]}
-            var attribute_names = ["f_front", "f_back", "s_front", "s_back"];
+            var attribute_names = []; //"f_front", "f_back", "s_front", "s_back"];
             for (var name of attribute_names) {
-                var dataview = this.model.get(name);
-                if (dataview !== undefined) {
-                    var arr = new Float32Array(dataview.buffer);
-			        geometry.addAttribute(name, new THREE.BufferAttribute(arr, 1));
+                var obj = this.model.get(name);
+                if (obj !== undefined) {
+                    obj_array = new Float32Array(obj.buffer.buffer);
+			        geometry.addAttribute(name, new THREE.BufferAttribute(obj_array, 1));
                 }
             }
 
-            // Close up
-            console.log("geometry update: finalize");
+            //geometry.computeVertexNormals();
             geometry.computeBoundingSphere();
+
+            // TODO: What's this for?
+            geometry.attributes.position.needsUpdate = true;
+            //geometry.attributes.color.needsUpdate = true;
+
             this.replace_obj(geometry);
         }
     });
