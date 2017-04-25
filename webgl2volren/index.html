@@ -114,47 +114,34 @@ void main() {
 precision highp float;
 precision highp int;
 
-// MVP matrix
-uniform mat4 u_mvp;
+// Uniforms
+uniform mat4 u_mvp;   // MVP matrix
 
-// Vertex coordinate in model space
-in vec3 a_position;
+// Vertex attributes
+in vec3 a_position;          // Position in model space coordinates
+in vec4 a_rayLengths;        // Ray lengths to each face of tetrahedron
+//in int a_cellIndex;          // Tetrahedron cell index
+in float a_functionValue;    // Value of function
+in vec3 a_functionGradient;  // Gradient of f on tetrahedron
 
-// Ray lengths to opposing faces
-in vec4 a_rayLengths;
-
-// Tetrahedron cell index
-in int a_cellIndex;
-
-// Value of function in vertex
-in float a_functionValue;  // TODO: Name? function, value, data, etc... pick one
-
-// Gradient of f on this cell
-in vec3 a_functionGradient;
-
-// Position in model coordinates
-out vec3 v_position;
-
-// Ray lengths to opposing faces
-out vec4 v_rayLengths;
-
-// Tetrahedron cell index
-flat out int v_cellIndex;
-
-// Value of function
-out float v_functionValue;
-
-// Gradient of f on this cell
-flat out vec3 v_functionGradient;
+// Varyings
+out vec3 v_position;               // Position in model space coordinates
+out vec4 v_rayLengths;             // Ray lengths to each face of tetrahedron
+//flat out int v_cellIndex;          // Tetrahedron cell index
+out float v_functionValue;         // Value of function
+flat out vec3 v_functionGradient;  // Gradient of f on tetrahedron
 
 void main()
 {
     // Pass on attributes to be interpolated across front face
     v_position = a_position;
     v_rayLengths = a_rayLengths;
-    v_cellIndex = a_cellIndex;
+//    v_cellIndex = a_cellIndex;
+
     v_functionValue = a_functionValue;
     v_functionGradient = a_functionGradient;
+
+    // Map vertex coordinate to clip space
     gl_Position = u_mvp * vec4(a_position, 1.0);
 }
 </script>
@@ -165,11 +152,14 @@ precision highp float;
 precision highp int;
 precision highp sampler2D;
 
+// Selecting perspective or orthographic projection
+uniform bool u_usePerspective;
+
 // Camera position used to compute view direction with perspective projection
 uniform vec3 u_cameraPosition;
 
 // Camera view direction with orthographic projection
-//uniform vec3 u_viewDirection;
+uniform vec3 u_viewDirection;
 
 // Lookup table for density
 uniform sampler2D u_densityLUT;
@@ -177,48 +167,79 @@ uniform sampler2D u_densityLUT;
 // Lookup table for emission color
 uniform sampler2D u_emissionLUT;
 
+// Lookup table for emission color (rgb) and density (a)
+//uniform sampler2D u_emissionDensityLUT
+
 // Particle cross section to scale extinction
 uniform float u_particleCrossSection;
 
 // Min/max values of function
-uniform vec3 u_fRange;
+uniform vec3 u_functionRange;
 
-// Position in model coordinates
-in vec3 v_position;
-
-// Ray lengths to opposing faces
-in vec4 v_rayLengths;
-
-// Value of f at current fragment on the rasterized front face
-in float v_functionValue;
-
-// Gradient of f on this cell
-flat in vec3 v_functionGradient;
-// TODO: Get functionGradient by sampling texture instead to save memory
-//flat in int v_cellIndex;
+// TODO: Get functionGradient by sampling texture instead to save memory?
 //uniform sampler2D u_functionGradient;
+
+// Varyings, interpolated on the rasterized front face currently drawn
+in vec3 v_position;               // Position in model space coordinates
+in vec4 v_rayLengths;             // Ray lengths to each face of tetrahedron
+//flat in int v_cellIndex;          // Tetrahedron cell index
+in float v_functionValue;         // Value of function
+flat in vec3 v_functionGradient;  // Gradient of f on tetrahedron
 
 // Final result
 out vec4 fragColor;
 
-vec4 integrate_constant_ray(float depth, float extinction, vec3 emission)
+
+// TODO: Implement Mooreland here
+vec4 integrate_linear_ray(
+    float depth,
+    vec3 emission0, float extinction0,
+    vec3 emission1, float extinction1)
 {
     // Simplest per-fragment approximation to ray integral, assuming
     // piecewise constant color and extinction across the ray segment.
-    // Use with blend equation: I_src * A_dst + I_dst
+
+    // Take average values over ray segment
+    float extinction = 0.5f * (extinction0 + extinction1);
+    vec3 emission = 0.5f * (emission0 + emission1);
+
+    // Evaluate ray integral, use in combination
+    // with blend equation: RGB_src * A_dst + RGB_dst
     float transparency = exp(-depth * extinction);
     float alpha = 1.0f - transparency;
     return vec4(alpha * emission, alpha);
 }
 
+
+vec4 integrate_constant_ray(
+    float depth,
+    vec3 emission,
+    float extinction)
+{
+    // Simplest per-fragment approximation to ray integral, assuming
+    // piecewise constant color and extinction across the ray segment.
+
+    // Evaluate ray integral, use in combination
+    // with blend equation: RGB_src * A_dst + RGB_dst
+    float transparency = exp(-depth * extinction);
+    float alpha = 1.0f - transparency;
+    return vec4(alpha * emission, alpha);
+}
+
+
 void main()
 {
     // View direction through this fragment for perspective projected camera
-    vec3 viewDirection = normalize(v_position - u_cameraPosition);
+    vec3 viewDirection;
+    if (u_usePerspective)
+        viewDirection = normalize(v_position - u_cameraPosition);
+    else
+        viewDirection = u_viewDirection;
 
     // Look for smallest positive ray length
     const float infinity = 1e10;
     float depth = infinity;
+    bvec4 positive = greaterThan(v_rayLengths, vec4(0.0f));
     for (int i = 0; i < 4; ++i)
     {
         if (v_rayLengths[i] > 0.0f)
@@ -228,29 +249,120 @@ void main()
     }
 
     // Compute exit position (not needed)
-    //float exitPosition = v_position + depth * viewDirection;
+    //vec3 exitPosition = v_position + depth * viewDirection;
 
     // Compute f values at entry and exit points of ray
     float fStart = v_functionValue;
     float fEnd = fStart + depth * dot(v_functionGradient, viewDirection);
 
     // Map function values to [0, 1] range
-    // Optimized by defining
-    //    u_fRange.z == 1.0f / (u_fRange.x - u_fRange.y);
-    float f0 = (fEnd - u_fRange.x) * u_fRange.z;
-    float f1 = (fStart - u_fRange.x) * u_fRange.z;
+    // NB! Optimized by defining
+    //    u_functionRange.z == 1.0f / (u_functionRange.x - u_functionRange.y);
+    float f0 = (fStart - u_functionRange.x) * u_functionRange.z;
+    float f1 = (fEnd   - u_functionRange.x) * u_functionRange.z;
 
     // Use lookup tables to map (depth, f0, f1) to extinction and emission:
-    vec2 f0pos = vec2(f0, 0.5f);
-    vec2 f1pos = vec2(f1, 0.5f);
-    float extinction0 = u_particleCrossSection * texture(u_densityLUT, f0pos).r;
-    float extinction1 = u_particleCrossSection * texture(u_densityLUT, f1pos).r;
-    vec3 emission0 = texture(u_emissionLUT, f0pos).xyz;
-    vec3 emission1 = texture(u_emissionLUT, f1pos).xyz;
-    float extinction = 0.5f * (extinction0 + extinction1);
-    vec3 emission = 0.5f * (emission0 + emission1);
+    /*
+    // Use combined lookup table f -> (emission, extinction)
+    vec4 value0 = texture(u_emissionDensityLUT, vec2(f0, 0.5f));
+    vec4 value1 = texture(u_emissionDensityLUT, vec2(f1, 0.5f));
+    vec3 emission0 = value0.rgb;
+    vec3 emission1 = value1.rgb;
+    float extinction0 = u_particleCrossSection * value0.a;
+    float extinction1 = u_particleCrossSection * value1.a;
+    */
+    // Use separate lookup tables f -> emission, g -> extinction
+    vec3 emission0 = texture(u_emissionLUT, vec2(f0, 0.5f)).rgb;
+    vec3 emission1 = texture(u_emissionLUT, vec2(f0, 0.5f)).rgb;
+    float extinction0 = u_particleCrossSection * texture(u_densityLUT, vec2(f0, 0.5f)).a;
+    float extinction1 = u_particleCrossSection * texture(u_densityLUT, vec2(f0, 0.5f)).a;
 
-    fragColor = integrate_constant_ray(depth, extinction, emission);
+    // Alternative models:
+    // - No lookup, emission and extinction both constant
+    // - Lookup only emission, extinction a constant rate
+    // - Lookup only extinction, emission a constant color
+    // - Lookup both emission and extinction in one LUT
+    // - Lookup emission and extinction in separate LUTs
+    //   using separate functions: f -> emission, g -> extinction
+
+    // Alternative LUT organization:
+    // - Lookup once using favg
+    //vec4 value = texture(u_emissionDensityLUT, vec2(0.5f*(f0+f1), 0.5f));
+    // - Lookup at endpoints
+    //vec4 value0 = texture(u_emissionDensityLUT, vec2(f0, 0.5f));
+    //vec4 value1 = texture(u_emissionDensityLUT, vec2(f1, 0.5f));
+    // - Lookup in 2D texture using (f0, f1)
+    //vec4 value = texture(u_emissionDensityLUT, vec2(f0, f1));
+
+    // Apply piecewise constant ray integration model
+    vec3 emission = 0.5f * (emission0 + emission1);
+    float extinction = 0.5f * (extinction0 + extinction1);
+    fragColor = integrate_constant_ray(
+        depth, emission, extinction);
+
+    // Alternative ray models:
+
+    // - Maximum intensity:
+    //    - I(D) = f( sup_s f(s) )
+    //    - Depth buffer: Off
+    //    - Blend equation: Max(I_src, I_dst)
+    //    - Cell ordering: No
+    //    - Variants:
+    //        - Indirect:
+    //             fragColor = max(lut(f0), lut(f1));
+    //        - Direct:
+    //             fragColor = max(f0, f1);
+    //        - Two phase:
+    //             Direct, then compose framebuffer with colormap
+
+    // - Splatting:
+    //    - I(D) = int_0^D C(f(s)) ds
+    //    - Depth buffer: Off
+    //    - Blend equation: Sum(I_src, I_dst)
+    //    - Cell ordering: No
+    //    - fragColor = depth * texture(u_colormap, vec2(0.5f*(f0+f1), 0.5f)).rgb;
+
+    // - Isosurfaces:
+    //    - "Arbitrary" number of opaque surfaces!
+    //    - Depth buffer: On
+    //    - Blend equation: Off
+    //    - Cell ordering: No
+    //    - Still need ray length to compute f1
+    //    - Create texture:  u_isosurface[f0, f1] = first isosurface value in [f0,f1]
+    //    - vec4 texel = texture(u_isosurface, vec2(f0, f1));
+    //    - Variants:
+    //        - Isosurface texture precomposed with colormap:
+    //            fragColor = texel;
+    //        - Compose with colormap:
+    //            fragColor = texture(u_colormap, texel.x);
+
+    // - Direct volume rendering:
+    //    - T(s) = exp(-int_s^D tau rho(g(t)) dt)
+    //    - I(D) = I(0) T(0) + int_0^D C(f(s)) rho(g(s)) T(s) ds
+    //    - Depth buffer: Off (can use depth test to preserve opaque background)
+    //    - Blend equation: (1 - A_dst) * I_src + I_dst
+    //    - Cell ordering: Yes
+    //    - Variants: (I), (II), (III) below
+
+    // - (I) Fully piecewise constant emission and extinction (current)
+    //   - Note: If f is also piecewise constant, don't need gradient and f0 == f1
+
+    // - (II) Piecewise linear emission and extinction (Mooreland)
+
+    // - (III) Arbitrary extinction transfer function with 2D texture lookup
+    //   - Assuming piecewise constant C,
+    //        int_0^D C rho exp(-int_s^D A rho dt) ds
+    //        = C int_0^D d/ds exp(-int_s^D A rho dt) ds
+    //        = C (exp(-int_D^D A rho dt) - exp(-int_0^D A rho dt))
+    //        = C (1 - T)
+    //        T = exp(-A int_0^D rho dt)
+    //   - Using f = (1-r)f0 + r f1, r in [0,1]:
+    //        r = t/D,  1-r = 1-t/D,  dr = 1/D dt,  r(t=s) = s/D,  r(t=D) = 1
+    //        U = int_0^D rho(f(t)) dt
+    //          = int_0^D rho( (1 - t/D)*f0 + (t/D)*f1 ) dt
+    //          = D int_0^1 rho( (1-r)*f0 + r*f1 ) dr
+    //   - Preintegrating R(f0,f1) = int_0^1 rho( (1-r)*f0 + r*f1 ) dr
+
 }
 </script>
 
