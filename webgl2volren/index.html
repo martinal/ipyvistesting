@@ -118,10 +118,11 @@ void main()
 }
 </script>
 
-
 <script id="vertexShader" type="glsl/vertex-shader">#version 300 es
 precision highp float;
 precision highp int;
+
+// FIXME: Use uint, uvec instead of int, ivec everywhere relevant
 
 // Uniforms
 uniform mat4 u_mvp;   // MVP matrix
@@ -529,13 +530,18 @@ in float a_functionValue;    // Value of function
 
 
 <script>
+// Mirror of THREE.BufferAttribute
+function BufferAttribute(array, itemSize)
+{
+    this.array = array;
+    this.count = array.length / itemSize;
+    this.itemSize = itemSize;
+    this.dynamic = false;
+}
+</script>
 
-var DEBUG = true;
 
-var canvas;
-var gl;
-var volren;
-
+<script>
 
 // Generate set of shaders  // TODO: Allow configuration
 function generateShaders() {
@@ -566,14 +572,55 @@ function compilePrograms(gl, shaders) {
     };
 }
 
-// Mirror of THREE.BufferAttribute
-function BufferAttribute(array, itemSize)
-{
-    this.array = array;
-    this.count = array.length / itemSize;
-    this.itemSize = itemSize;
-    this.dynamic = false;
+function createSizedBuffer(gl, size, usage) {
+    var buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, size, usage);
+    return buffer;
 }
+
+function createAndBufferData(gl, array, usage) {
+    var buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, array, usage);
+    return buffer;
+}
+
+function updateBufferData(gl, buffer, array) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, array, usage);
+}
+
+function createElementArrayBuffer(gl, num_tetrahedrons) {
+    var array = new Uint32Array(7 * num_tetrahedrons);
+    var strip = new Uint32Array([0,1,2,3,0,1]);
+    var maxValue = 0xFFFFFFFF;
+    var celloffset = 0;
+    var vertoffset = 0;
+    for (var i = 0; i < num_tetrahedrons; ++i, celloffset += 7, vertoffset += 4)
+    {
+        for (var j = 0; j < 6; ++j)
+            array[celloffset + j] = vertoffset + strip[j];
+        array[6] = maxValue;
+    }
+    var buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, array, gl.STATIC_DRAW);
+    return buffer;
+}
+
+function configureAttrib(gl, program, buffer, name, size, type) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    var location = gl.getAttribLocation(program, name);
+    if (location < 0) {
+        console.log("Program: " + program);
+        console.log("Name: " + name);
+        console.log("Loc: " + location);
+    }
+    gl.enableVertexAttribArray(location);
+    gl.vertexAttribPointer(location, size, type, false, 0, 0);
+}
+
 
 function setup(gl) {
 
@@ -594,30 +641,22 @@ function setup(gl) {
         vertexVao: gl.createVertexArray()
     };
 
-    // Create some test data
-    var model = createTestModel();
-
     // Collect state in global volren object
     // (for now, figure out better design later)
-    volren = {}
+    var volren = {}
     volren.gl = gl;
     volren.programs = programs;
     volren.vaos = vaos;
-    volren.model = model;
     volren.config = { rayModel: "dvr" };
 
+    volren.model = createTestModel();
 
     ///////////////////////////////////////////////////////////////////////////
     /* Things to do:
 
-    - Upload vertices to buffer
-    - Upload cells to buffer
-    - Upload ordering to buffer
-    - Upload vertexvalues to buffer
-
     - Allocate buffer for float functionValue per vert per cell
     - Allocate buffer for vec3 functionGradient per cell (use as texture) or per vert per cell (use as vba)
-    - Allocate buffer for vec4 rayLength per vert per cell
+    - Allocate buffer for vec4 rayLengths per vert per cell
     - Allocate buffer for uint cellIndex per vert per cell (duplicated from cellOrdering)
     - Allocate buffer for vec3 position per vert per cell
     */
@@ -631,15 +670,48 @@ function setup(gl) {
     */
     ///////////////////////////////////////////////////////////////////////////
 
+    // Create buffers for uploading model to GPU
+    volren.buffers = {}
+
+    // Upload data (tex_ = texture buffers only, data per original vertex)
+    volren.buffers.tex_vertices = createAndBufferData(gl, volren.model.vertices, gl.STATIC_DRAW);
+    volren.buffers.cells = createAndBufferData(gl, volren.model.cells, gl.STATIC_DRAW);
+    volren.buffers.cellOrdering = createAndBufferData(gl, volren.model.cellOrdering, gl.DYNAMIC_DRAW);
+    volren.buffers.tex_functionValues = createAndBufferData(gl, volren.model.functionValues, gl.DYNAMIC_DRAW);
+
+    // Allocate cell/vertex attribute buffers
+    var NC = volren.model.num_tetrahedrons;
+    var NV = 4 * NC;
+    volren.buffers.functionValues = createSizedBuffer(gl, 4*NV, gl.DYNAMIC_DRAW);
+    volren.buffers.tex_functionGradient = createSizedBuffer(gl, 4*3*NC, gl.STATIC_DRAW);
+    //volren.buffers.functionGradient = createSizedBuffer(gl, 4*3*NV, gl.DYNAMIC_DRAW);
+    volren.buffers.rayLengths = createSizedBuffer(gl, 4*4*NV, gl.DYNAMIC_DRAW);
+    volren.buffers.cellIndex = createSizedBuffer(gl, 4*NV, gl.DYNAMIC_DRAW);
+    volren.buffers.positions = createSizedBuffer(gl, 4*3*NV, gl.DYNAMIC_DRAW);
+
+
+    // Build the facet elements buffer
+    volren.buffers.elementArray = createElementArrayBuffer(gl, volren.model.num_tetrahedrons);
+
 
     //gl.useProgram(volren.programs.cellProgram);
     //gl.bindVertexArray(volren.vaos.cellVao);
 
-    // Select program and vao
+
+    // Select program and vao to configure attributes
     var program = volren.programs.vertexProgram;
     var vao = volren.vaos.vertexVao;
     gl.useProgram(program);
     gl.bindVertexArray(vao);
+    // FIXME: Go through attributes in shader and double check this:
+    configureAttrib(gl, program, volren.buffers.positions,
+        "a_position", 3, gl.FLOAT);
+    configureAttrib(gl, program, volren.buffers.cellIndex,
+        "a_cellIndex", 1, gl.INT);
+    configureAttrib(gl, program, volren.buffers.rayLengths,
+        "a_rayLengths", 4, gl.FLOAT);
+    configureAttrib(gl, program, volren.buffers.functionValues,
+        "a_functionValue", 1, gl.FLOAT);
 
     // Upload uniform values
     var mvp = new Float32Array([
@@ -655,21 +727,8 @@ function setup(gl) {
     var backgroundColorLocation = gl.getUniformLocation(program, "u_backgroundColor");
     gl.uniform4fv(backgroundColorLocation, backgroundColor);
 
-
-    // Configure and upload attribute arrays
-    var positions = new Float32Array([
-        0, 0,
-        0, 0.8,
-        0.4, 0,
-    ]);
-    var positionBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
-
-    var positionAttributeLocation = gl.getAttribLocation(program, "a_position");
-    gl.enableVertexAttribArray(positionAttributeLocation);
-    gl.vertexAttribPointer(positionAttributeLocation,
-        2, gl.FLOAT, false, 0, 0);
+    // Return context
+    return volren;
 }
 
 function configureBlendEquation(gl, rayModel) {
@@ -710,9 +769,9 @@ function render(volren) {
     gl.drawArrays(gl.TRIANGLES, 0, 3);//4 * volren.model.num_tetrahedrons);
 }
 
-function update() {
+function update(volren) {
     // Using global object volren
-    //window.requestAnimationFrame(update);
+    window.requestAnimationFrame(update.bind(null, volren));
     render(volren);
 }
 
@@ -733,10 +792,10 @@ function init()
     }
 
     // Initial gl setup
-    setup(gl);
+    var volren = setup(gl);
 
     // Start updates
-    update();
+    update(volren);
 }
 </script>
 
