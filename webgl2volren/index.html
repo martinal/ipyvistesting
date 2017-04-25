@@ -21,6 +21,9 @@ uniform isampler2D u_cells;
 // Contains coordinates for each vertex of the tetrahedron mesh
 uniform sampler2D u_coordinates;
 
+// Contains function values for each vertex of the tetrahedron mesh
+uniform sampler2D u_functionValues;
+
 // Camera position used to compute view direction with perspective projection
 uniform vec3 u_cameraPosition;
 
@@ -30,21 +33,27 @@ uniform vec3 u_cameraPosition;
 // Cell index taken from cell ordering
 in int a_cellIndex;
 
-void main() {
+ivec2 texelFetchCoord(int index, ivec2 size)
+{
+    return ivec2(index / size.x, index % size.x);
+}
+
+void main()
+{
     // Get vertex indices of cell
-    ivec2 cellTexSize = textureSize(u_cells, 0);
-    int cellStride = cellTexSize.x; // TODO: .x or .y?
-    ivec2 cellPos = ivec2(a_cellIndex / cellStride, a_cellIndex % cellStride);
-    ivec4 index = texelFetch(u_cells, cellPos, 0);
+    ivec4 index = texelFetch(u_cells,
+        texelFetchCoord(a_cellIndex, textureSize(u_cells, 0)),
+        0);
 
     // Get vertex coordinates of cell
+    ivec2 coordsTexSize = textureSize(u_coordinates, 0);
     vec3 coords[4];
+    float functionValues[4];
     for (int i = 0; i < 4; ++i)
     {
-        ivec2 coordsTexSize = textureSize(u_coordinates, 0);
-        int indexStride = coordsTexSize.x; // TODO: .x or .y?
-        ivec2 indexPos = ivec2(index[i] / indexStride, index[i] % indexStride);
+        ivec2 indexPos = texelFetchCoord(index[i], coordsTexSize);
         coords[i] = texelFetch(u_coordinates, indexPos, 0).xyz;
+        functionValues[i] = texelFetch(u_functionValues, indexPos, 0).x;
     }
 
     // Compute edge vectors
@@ -116,30 +125,37 @@ precision highp int;
 
 // Uniforms
 uniform mat4 u_mvp;   // MVP matrix
+uniform sampler2D u_functionGradients;  // Function gradient for each tetrahedron
 
 // Vertex attributes
 in vec3 a_position;          // Position in model space coordinates
 in vec4 a_rayLengths;        // Ray lengths to each face of tetrahedron
-//in int a_cellIndex;          // Tetrahedron cell index
+in int a_cellIndex;          // Tetrahedron cell index
 in float a_functionValue;    // Value of function
-in vec3 a_functionGradient;  // Gradient of f on tetrahedron
+//in vec3 a_functionGradient;  // Gradient of f on tetrahedron
 
 // Varyings
 out vec3 v_position;               // Position in model space coordinates
 out vec4 v_rayLengths;             // Ray lengths to each face of tetrahedron
-//flat out int v_cellIndex;          // Tetrahedron cell index
 out float v_functionValue;         // Value of function
 flat out vec3 v_functionGradient;  // Gradient of f on tetrahedron
+
+ivec2 texelFetchCoord(int index, ivec2 size)
+{
+    return ivec2(index / size.x, index % size.x);
+}
 
 void main()
 {
     // Pass on attributes to be interpolated across front face
     v_position = a_position;
     v_rayLengths = a_rayLengths;
-//    v_cellIndex = a_cellIndex;
 
     v_functionValue = a_functionValue;
-    v_functionGradient = a_functionGradient;
+    //v_functionGradient = a_functionGradient;
+    v_functionGradient = texelFetch(u_functionGradients,
+        texelFetchCoord(a_cellIndex, textureSize(u_functionGradients, 0)),
+        0).xyz;
 
     // Map vertex coordinate to clip space
     gl_Position = u_mvp * vec4(a_position, 1.0);
@@ -256,9 +272,12 @@ void main()
     // Use combined lookup table favg -> (emission, extinction)
     /*
     float favg = 0.5f * (f.x + f.y);
+
     vec4 value = texture(u_emissionDensityLUT, vec2(favg, 0.5f));
     vec3 emission = value.rgb;
     float extinction = u_particleCrossSection * value.a;
+
+    //vec4 ee = lookup_ee(favg, u_emissionDensityLUT, u_particleCrossSection);
     */
 
     // Use lookup tables to map (depth, f0, f1) to extinction and emission:
@@ -273,17 +292,22 @@ void main()
     // Compute averages on ray segment
     vec3 emission = mix(emission0, emission1, 0.5f);
     float extinction = mix(extinction0, extinction1, 0.5f);
+
+    //vec4 ee = lookup_ee(f, u_emissionDensityLUT, u_particleCrossSection);
     */
 
     // Use separate lookup tables f -> emission, g -> extinction
     ///*
+    vec2 g = f;
     vec3 emission0 = texture(u_emissionLUT, vec2(f.x, 0.5f)).rgb;
     vec3 emission1 = texture(u_emissionLUT, vec2(f.y, 0.5f)).rgb;
-    float extinction0 = u_particleCrossSection * texture(u_densityLUT, vec2(f.x, 0.5f)).a;
-    float extinction1 = u_particleCrossSection * texture(u_densityLUT, vec2(f.y, 0.5f)).a;
+    float extinction0 = u_particleCrossSection * texture(u_densityLUT, vec2(g.x, 0.5f)).a;
+    float extinction1 = u_particleCrossSection * texture(u_densityLUT, vec2(g.y, 0.5f)).a;
     // Compute averages on ray segment
     vec3 emission = mix(emission0, emission1, 0.5f);
     float extinction = mix(extinction0, extinction1, 0.5f);
+
+    //vec4 ee = lookup_ee(f, g, u_emissionDensityLUT, u_particleCrossSection);
     //*/
 
 
@@ -393,7 +417,7 @@ void main()
 
 
 <script>
-function createShader(gl, type, source, errorCb) {
+function createShader(gl, type, source) {
     var shader = gl.createShader(type);
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
@@ -403,11 +427,16 @@ function createShader(gl, type, source, errorCb) {
     }
     var msg = gl.getShaderInfoLog(shader);
     console.log(msg);
-    errorCb(msg);
+
+    var elm = document.getElementById("shaderCompileErrors");
+    if (!!elm) {
+        elm.innerHTML = error;
+    }
+
     gl.deleteShader(shader);
 }
 
-function createProgram(gl, vertexShader, fragmentShader, errorCb) {
+function createProgram(gl, vertexShader, fragmentShader) {
     var program = gl.createProgram();
     gl.attachShader(program, vertexShader);
     gl.attachShader(program, fragmentShader);
@@ -418,85 +447,43 @@ function createProgram(gl, vertexShader, fragmentShader, errorCb) {
     }
     var msg = gl.getProgramInfoLog(program);
     console.log(msg);
-    errorCb(msg);
     gl.deleteProgram(program);
 }
+</script>
 
-function init() {
-    console.log("main running");
 
-    var precanvas = document.getElementById("precanvas");
-    var canvas = document.getElementById("thecanvas");
-    var gl = canvas.getContext("webgl2", {
-        antialias: false,
-        depth: false,
-        alpha: true,
-        stencil: false,
-        preserveDrawingBuffer: true,
-        failIfMajorPerformanceCaveat: true,
-    });
-    if (!gl) {
-        console.log("Failed to get webGL2 context.");
-        precanvas.innerHTML = "<h3>Couldn't get WebGL2 context, canvas will be empty.</h3>";
-        return;
+<script>
+
+// Initial draft of a volumetric model class.
+// This will need to accomodate missing cellOrdering,
+// missing function values, additional function values,
+// and partial updates.
+function VolumeModel(vertices, cells, cellOrdering, functionValues)
+{
+    this.vertices = vertices,
+    this.cells = cells;
+    this.cellOrdering = cellOrdering;
+    this.functionValues = functionValues;
+    this.num_tetrahedrons = Math.floor(cells.length / 4);
+    this.num_vertices = Math.floor(vertices.length / 3);
+
+    var num_triangle_vertices = this.num_tetrahedrons * 4;
+    if (cells.length !== 4 * this.num_tetrahedrons) {
+        throw "Invalid dimensions.";
     }
-    precanvas.innerHTML = "<h3>WebGL2 Canvas (size " + gl.canvas.width + " x " + gl.canvas.height + ")</h3>";
+    if (vertices.length !== 3 * this.num_vertices) {
+        throw "Invalid dimensions.";
+    }
+    if (cellOrdering.length !== this.num_tetrahedrons) {
+        throw "Invalid dimensions.";
+    }
+    if (functionValues.length !== this.num_vertices) {
+        throw "Invalid dimensions.";
+    }
+}
 
-
-    // Configure size and background
-    //webglUtils.resizeCanvasToDisplaySize(gl.canvas);
-    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-    gl.clearColor(0, 0, 0, 0);
-
-
-    // Configure blend equation
-    gl.blendEquation(gl.FUNC_ADD);
-    //gl.blendEquation(gl.MAX);
-    gl.blendFunc(gl.ONE_MINUS_DST_ALPHA, gl.ONE);
-
-
-    // Get shader source from page
-    var cellShaderSrc = document.getElementById("cellShader").innerHTML;
-    var vertexShaderSrc = document.getElementById("vertexShader").innerHTML;
-    var fragmentShaderSrc = document.getElementById("fragmentShader").innerHTML;
-
-    // Display shader sources on page
-    document.getElementById("cellShaderSrcDisplay").innerHTML = cellShaderSrc;
-    document.getElementById("vertexShaderSrcDisplay").innerHTML = vertexShaderSrc;
-    document.getElementById("fragmentShaderSrcDisplay").innerHTML = fragmentShaderSrc;
-
-    var cellShader = createShader(gl, gl.VERTEX_SHADER, cellShaderSrc,
-        function(error) { document.getElementById("cellShaderSrcErrors").innerHTML = error; }
-        );
-    /*
-    var cellProgram = createProgram(gl, cellShader, ...);
-    */
-
-    // Compile shaders and link program
-    var vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSrc,
-        function(error) { document.getElementById("vertexShaderSrcErrors").innerHTML = error; }
-        );
-    var fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSrc,
-        function(error) { document.getElementById("fragmentShaderSrcErrors").innerHTML = error; }
-        );
-    var program = createProgram(gl, vertexShader, fragmentShader,
-        function(error) { document.getElementById("programLinkErrors").innerHTML = error; }
-        );
-
-
-    // Make this the active program
-    gl.useProgram(program);
-
-
-    // Create and bind a VAO, the following VBA calls will store data in this object
-    var vao = gl.createVertexArray();
-    gl.bindVertexArray(vao);
-
-
-
-    ///////////////////////////////////////////////////////////////////////////
-    // Mockup of unstructured tetrahedral mesh data
-    // Define mesh coordinates
+// Create test model with unstructured tetrahedral mesh data
+function createTestModel() {
     var vertices = new Float32Array([
         0.0, 0.0, 0.0,
         0.0, 0.0, 1.0,
@@ -504,36 +491,122 @@ function init() {
         1.0, 0.0, 0.0,
         1.0, 1.0, 1.0,
     ]);
-    // Define mesh cells
     var cells = new Uint32Array([
         0, 1, 2, 3,
         1, 2, 3, 4,
     ]);
-    // Define mesh cell ordering
     var cellOrdering = new Uint32Array([
         1, 0
     ]);
-    // Define function values in vertices
-    var vertexValues = new Float32Array([
+    var functionValues = new Float32Array([
         1.0, 2.0, 3.0, 4.0, 5.0
     ]);
-    ///////////////////////////////////////////////////////////////////////////
-    // Get and validate dimensions from data
-    var num_cells = Math.floor(cells.length / 4);
-    var num_tetrahedron_vertices = Math.floor(vertices.length / 3);
-    var num_triangle_vertices = num_cells * 4;
-    if (cells.length !== num_cells * 4) {
-        throw "Invalid dimensions.";
-    }
-    if (vertices.length !== num_tetrahedron_vertices * 3) {
-        throw "Invalid dimensions.";
-    }
-    if (cellOrdering.length !== num_cells) {
-        throw "Invalid dimensions.";
-    }
-    if (vertexValues.length !== num_tetrahedron_vertices) {
-        throw "Invalid dimensions.";
-    }
+    return new VolumeModel(vertices, cells, cellOrdering, functionValues);
+}
+
+function ModelBuffers(model) {
+    this.model = model;
+}
+
+function setupCellShaderInputs() {
+    // FIXME: Setup cell shader uniforms and attributes:
+}
+
+function setupVertexShaderInputs() {
+/*  FIXME: Setup vertex shader uniforms and attributes:
+uniform sampler2D u_functionGradients;  // Function gradient for each tetrahedron
+
+// Vertex attributes
+in vec3 a_position;          // Position in model space coordinates
+in vec4 a_rayLengths;        // Ray lengths to each face of tetrahedron
+in int a_cellIndex;          // Tetrahedron cell index
+in float a_functionValue;    // Value of function
+//in vec3 a_functionGradient;  // Gradient of f on tetrahedron
+*/
+}
+
+</script>
+
+
+<script>
+
+var DEBUG = true;
+
+var canvas;
+var gl;
+var volren;
+
+
+// Generate set of shaders  // TODO: Allow configuration
+function generateShaders() {
+    var cellShaderSrc = document.getElementById("cellShader").innerHTML;
+    var vertexShaderSrc = document.getElementById("vertexShader").innerHTML;
+    var fragmentShaderSrc = document.getElementById("fragmentShader").innerHTML;
+
+    return {
+        cellShaderSrc: cellShaderSrc,
+        vertexShaderSrc: vertexShaderSrc,
+        fragmentShaderSrc: fragmentShaderSrc
+    };
+}
+
+
+// Compile shaders and link programs
+function compilePrograms(gl, shaders) {
+    var cellShader = createShader(gl, gl.VERTEX_SHADER, shaders.cellShaderSrc);
+    var cellProgram = 0; //createProgram(gl, cellShader, ...);
+
+    var vertexShader = createShader(gl, gl.VERTEX_SHADER, shaders.vertexShaderSrc);
+    var fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, shaders.fragmentShaderSrc);
+    var vertexProgram = createProgram(gl, vertexShader, fragmentShader);
+
+    return {
+        cellProgram: cellProgram,
+        vertexProgram: vertexProgram
+    };
+}
+
+// Mirror of THREE.BufferAttribute
+function BufferAttribute(array, itemSize)
+{
+    this.array = array;
+    this.count = array.length / itemSize;
+    this.itemSize = itemSize;
+    this.dynamic = false;
+}
+
+function setup(gl) {
+
+    // Configure size and background
+    //webglUtils.resizeCanvasToDisplaySize(gl.canvas);
+    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+    gl.clearColor(0, 0, 0, 0);
+
+    // Generate shader sources
+    var shaders = generateShaders();
+
+    // Compile programs
+    var programs = compilePrograms(gl, shaders);
+
+    // Create VAOs for each program
+    var vaos = {
+        cellVao: gl.createVertexArray(),
+        vertexVao: gl.createVertexArray()
+    };
+
+    // Create some test data
+    var model = createTestModel();
+
+    // Collect state in global volren object
+    // (for now, figure out better design later)
+    volren = {}
+    volren.gl = gl;
+    volren.programs = programs;
+    volren.vaos = vaos;
+    volren.model = model;
+    volren.config = { rayModel: "dvr" };
+
+
     ///////////////////////////////////////////////////////////////////////////
     /* Things to do:
 
@@ -558,6 +631,15 @@ function init() {
     */
     ///////////////////////////////////////////////////////////////////////////
 
+
+    //gl.useProgram(volren.programs.cellProgram);
+    //gl.bindVertexArray(volren.vaos.cellVao);
+
+    // Select program and vao
+    var program = volren.programs.vertexProgram;
+    var vao = volren.vaos.vertexVao;
+    gl.useProgram(program);
+    gl.bindVertexArray(vao);
 
     // Upload uniform values
     var mvp = new Float32Array([
@@ -588,48 +670,82 @@ function init() {
     gl.enableVertexAttribArray(positionAttributeLocation);
     gl.vertexAttribPointer(positionAttributeLocation,
         2, gl.FLOAT, false, 0, 0);
+}
 
+function configureBlendEquation(gl, rayModel) {
+    switch (rayModel)
+    {
+    case "dvr":
+        gl.blendEquation(gl.FUNC_ADD);
+        gl.blendFunc(gl.ONE_MINUS_DST_ALPHA, gl.ONE);
+        break;
+    case "sum":
+        gl.blendEquation(gl.FUNC_ADD);
+        gl.blendFunc(gl.ONE, gl.ONE);
+        break;
+    case "max":
+        gl.blendEquation(gl.MAX);
+        break;
+    case "min":
+        gl.blendEquation(gl.MIN);
+        break;
+    default:
+        console.log("Unknown ray model " + rayModel);
+    }
+}
 
-    // Clear background
-    gl.clear(gl.COLOR_BUFFER_BIT);
+function render(volren) {
+    gl = volren.gl;
 
+    // Process tetrahedron cells
+    //gl.useProgram(volren.programs.cellProgram);
+    //gl.bindVertexArray(volren.vaos.cellVao);
+    //gl.drawArrays(gl.POINTS, 0, volren.model.num_tetrahedrons);
 
     // Draw triangles
-    var primitiveType = gl.TRIANGLES;
-    var offset = 0;
-    var count = 3;
-    gl.drawArrays(primitiveType, offset, count);
+    gl.useProgram(volren.programs.vertexProgram);
+    gl.bindVertexArray(volren.vaos.vertexVao);
+    configureBlendEquation(gl, volren.config.rayModel);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);//4 * volren.model.num_tetrahedrons);
+}
 
+function update() {
+    // Using global object volren
+    //window.requestAnimationFrame(update);
+    render(volren);
+}
 
-    // Not sure if these deletions should be done anywhere?
-    var cleanup = function() {
-        gl.deleteShader(cellShader);
-        gl.deleteShader(vertexShader);
-        gl.deleteShader(fragmentShader);
-        gl.deleteProgram(program);
+function init()
+{
+    var canvas = document.getElementById("webgl2canvas");
+    var gl = canvas.getContext("webgl2", {
+        antialias: false,
+        depth: false,
+        alpha: true,
+        stencil: false,
+        preserveDrawingBuffer: true,
+        failIfMajorPerformanceCaveat: true,
+    });
+    if (!gl) {
+        console.log("Failed to get webGL2 context.");
+        return;
     }
+
+    // Initial gl setup
+    setup(gl);
+
+    // Start updates
+    update();
 }
 </script>
 
-
 </head>
 <body onload="init();">
-
-    <div id="precanvas"></div>
-    <canvas id="thecanvas" width="800" height="600"></canvas>
+    <canvas id="webgl2canvas" width="800" height="600"></canvas>
     <div id="shaderdisplay">
-        <h3>cell shader</h3>
-        <pre><code id="cellShaderSrcDisplay"></code></pre>
-        <pre><code id="cellShaderSrcErrors"></code></pre>
-        <h3>vertex shader</h3>
-        <pre><code id="vertexShaderSrcDisplay"></code></pre>
-        <pre><code id="vertexShaderSrcErrors"></code></pre>
-        <h3>fragment shader</h3>
-        <pre><code id="fragmentShaderSrcDisplay"></code></pre>
-        <pre><code id="fragmentShaderSrcErrors"></code></pre>
-        <h3>program linking</h3>
-        <pre><code id="programLinkErrors"></code></pre>
+        <h3>shader compile/link errors</h3>
+        <pre><code id="shaderCompileErrors">No errors.</code></pre>
     </div>
-
 </body>
 </html>
