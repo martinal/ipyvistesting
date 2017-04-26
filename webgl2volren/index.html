@@ -122,8 +122,6 @@ void main()
 precision highp float;
 precision highp int;
 
-// FIXME: Use uint, uvec instead of int, ivec everywhere relevant
-
 // Uniforms
 uniform mat4 u_mvp;   // MVP matrix
 uniform sampler2D u_functionGradients;  // Function gradient for each tetrahedron
@@ -174,6 +172,9 @@ uniform vec3 u_cameraPosition;
 
 // Camera view direction with orthographic projection
 //uniform vec3 u_viewDirection;
+
+// Unused?
+uniform vec4 u_backgroundColor;
 
 // Lookup table for density
 uniform sampler2D u_densityLUT;
@@ -418,6 +419,18 @@ void main()
 
 
 <script>
+function showCompileError(msg) {
+    console.log(msg);
+    var disp = document.getElementById("shaderdisplay");
+    if (!!disp) {
+        disp.style.display = "block";
+        var elm = document.getElementById("shaderCompileErrors");
+        if (!!elm) {
+            elm.innerHTML = msg;
+        }
+    }
+}
+
 function createShader(gl, type, source) {
     var shader = gl.createShader(type);
     gl.shaderSource(shader, source);
@@ -427,13 +440,7 @@ function createShader(gl, type, source) {
         return shader;
     }
     var msg = gl.getShaderInfoLog(shader);
-    console.log(msg);
-
-    var elm = document.getElementById("shaderCompileErrors");
-    if (!!elm) {
-        elm.innerHTML = error;
-    }
-
+    showCompileError(msg);
     gl.deleteShader(shader);
 }
 
@@ -447,7 +454,7 @@ function createProgram(gl, vertexShader, fragmentShader) {
         return program;
     }
     var msg = gl.getProgramInfoLog(program);
-    console.log(msg);
+    showCompileError(msg);
     gl.deleteProgram(program);
 }
 </script>
@@ -591,18 +598,24 @@ function updateBufferData(gl, buffer, array) {
     gl.bufferData(gl.ARRAY_BUFFER, array, usage);
 }
 
-function createElementArrayBuffer(gl, num_tetrahedrons) {
+// Compute the element array indices for one triangle strip for each tetrahedron
+function computeElementArrayIndices(num_tetrahedrons) {
     var array = new Uint32Array(7 * num_tetrahedrons);
     var strip = new Uint32Array([0,1,2,3,0,1]);
-    var maxValue = 0xFFFFFFFF;
-    var celloffset = 0;
-    var vertoffset = 0;
-    for (var i = 0; i < num_tetrahedrons; ++i, celloffset += 7, vertoffset += 4)
+    var primitiveRestartIndex = 0xFFFFFFFF;
+    for (var i = 0, celloffset = 0, vertoffset = 0;
+         i < num_tetrahedrons;
+         ++i, celloffset += 7, vertoffset += 4)
     {
         for (var j = 0; j < 6; ++j)
             array[celloffset + j] = vertoffset + strip[j];
-        array[6] = maxValue;
+        array[6] = primitiveRestartIndex;
     }
+    return array;
+}
+
+function createElementArrayBuffer(gl, num_tetrahedrons) {
+    var array = computeElementArrayIndices(num_tetrahedrons);
     var buffer = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, array, gl.STATIC_DRAW);
@@ -613,14 +626,42 @@ function configureAttrib(gl, program, buffer, name, size, type) {
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     var location = gl.getAttribLocation(program, name);
     if (location < 0) {
+        console.log("Failed to configure attribute:");
+        console.log("WebGL error: " + gl.getError());
         console.log("Program: " + program);
         console.log("Name: " + name);
         console.log("Loc: " + location);
+        console.log("GL errors: ");
     }
     gl.enableVertexAttribArray(location);
     gl.vertexAttribPointer(location, size, type, false, 0, 0);
 }
 
+function uploadUniforms(gl, program, uniforms) {
+    var backgroundColorLocation = gl.getUniformLocation(program, "u_backgroundColor");
+    if (backgroundColorLocation != -1)
+        gl.uniform4fv(backgroundColorLocation, uniforms.backgroundColor);
+
+    var cameraPositionLocation = gl.getUniformLocation(program, "u_cameraPosition");
+    if (cameraPositionLocation != -1)
+        gl.uniform3fv(cameraPositionLocation, uniforms.cameraPosition);
+
+    var viewDirectionLocation = gl.getUniformLocation(program, "u_viewDirection");
+    if (viewDirectionLocation != -1)
+        gl.uniform3fv(viewDirectionLocation, uniforms.viewDirection);
+
+    var functionRangeLocation = gl.getUniformLocation(program, "u_functionRange");
+    if (functionRangeLocation != -1)
+        gl.uniform3fv(functionRangeLocation, uniforms.functionRange);
+
+    var particleCrossSectionLocation = gl.getUniformLocation(program, "u_particleCrossSection");
+    if (particleCrossSectionLocation != -1)
+        gl.uniform1f(particleCrossSectionLocation, uniforms.particleCrossSection);
+
+    var mvpLocation = gl.getUniformLocation(program, "u_mvp");
+    if (mvpLocation != -1)
+        gl.uniformMatrix4fv(mvpLocation, false, uniforms.mvp);
+}
 
 function setup(gl) {
 
@@ -647,7 +688,9 @@ function setup(gl) {
     volren.gl = gl;
     volren.programs = programs;
     volren.vaos = vaos;
-    volren.config = { rayModel: "dvr" };
+    volren.config = {
+        rayModel: "dvr",
+    };
 
     volren.model = createTestModel();
 
@@ -671,61 +714,83 @@ function setup(gl) {
     ///////////////////////////////////////////////////////////////////////////
 
     // Create buffers for uploading model to GPU
-    volren.buffers = {}
-
-    // Upload data (tex_ = texture buffers only, data per original vertex)
-    volren.buffers.tex_vertices = createAndBufferData(gl, volren.model.vertices, gl.STATIC_DRAW);
-    volren.buffers.cells = createAndBufferData(gl, volren.model.cells, gl.STATIC_DRAW);
-    volren.buffers.cellOrdering = createAndBufferData(gl, volren.model.cellOrdering, gl.DYNAMIC_DRAW);
-    volren.buffers.tex_functionValues = createAndBufferData(gl, volren.model.functionValues, gl.DYNAMIC_DRAW);
-
-    // Allocate cell/vertex attribute buffers
     var NC = volren.model.num_tetrahedrons;
     var NV = 4 * NC;
-    volren.buffers.functionValues = createSizedBuffer(gl, 4*NV, gl.DYNAMIC_DRAW);
-    volren.buffers.tex_functionGradient = createSizedBuffer(gl, 4*3*NC, gl.STATIC_DRAW);
-    //volren.buffers.functionGradient = createSizedBuffer(gl, 4*3*NV, gl.DYNAMIC_DRAW);
-    volren.buffers.rayLengths = createSizedBuffer(gl, 4*4*NV, gl.DYNAMIC_DRAW);
-    volren.buffers.cellIndex = createSizedBuffer(gl, 4*NV, gl.DYNAMIC_DRAW);
-    volren.buffers.positions = createSizedBuffer(gl, 4*3*NV, gl.DYNAMIC_DRAW);
+    volren.buffers = {
+        // Upload user provided data (tex_ = texture buffers only, data per original vertex)
+        tex_vertices: createAndBufferData(gl, volren.model.vertices, gl.STATIC_DRAW),
+        tex_cells: createAndBufferData(gl, volren.model.cells, gl.STATIC_DRAW),
+        tex_functionValues: createAndBufferData(gl, volren.model.functionValues, gl.DYNAMIC_DRAW),
+        cellOrdering: createAndBufferData(gl, volren.model.cellOrdering, gl.DYNAMIC_DRAW),
 
+        // Allocate space on GPU for cell/vertex attribute buffers without uploading anything
+        functionValue: createSizedBuffer(gl, 4*NV, gl.DYNAMIC_DRAW),
+        tex_functionGradient: createSizedBuffer(gl, 4*3*NC, gl.STATIC_DRAW),
+        //functionGradient: createSizedBuffer(gl, 4*3*NV, gl.DYNAMIC_DRAW),
+        rayLengths: createSizedBuffer(gl, 4*4*NV, gl.DYNAMIC_DRAW),
+        cellIndex: createSizedBuffer(gl, 4*NV, gl.DYNAMIC_DRAW),
+        position: createSizedBuffer(gl, 4*3*NV, gl.DYNAMIC_DRAW),
+    };
 
     // Build the facet elements buffer
-    volren.buffers.elementArray = createElementArrayBuffer(gl, volren.model.num_tetrahedrons);
+    volren.elementArray = createElementArrayBuffer(gl, NC);
+
+    // Define uniforms
+    volren.uniforms = {
+        mvp: new Float32Array([
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]),
+        cameraPosition: new Float32Array([0.0, 0.0, -10.0]),
+        viewDirection: new Float32Array([0.0, 0.0, 1.0]),
+        backgroundColor: new Float32Array([1.0, 1.0, 0.0, 1.0]),
+        particleCrossSection: 1.0,
+        functionRange: new Float32Array([0.0, 1.0, 1.0 / (1.0 - 0.0)]),
+    };
+
+    // Setup textures FIXME
+    /*
+    uniform sampler2D u_densityLUT;
+    uniform sampler2D u_emissionLUT;
+    uniform sampler2D u_emissionDensityLUT
+    // TODO: Get functionGradient by sampling texture instead to save memory?
+    //uniform sampler2D u_functionGradient;
+    */
 
 
-    //gl.useProgram(volren.programs.cellProgram);
-    //gl.bindVertexArray(volren.vaos.cellVao);
-
+    // Setup feedback transform stuff FIXME
+    if (false) {
+        gl.useProgram(volren.programs.cellProgram);
+        gl.bindVertexArray(volren.vaos.cellVao);
+        //gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+        uploadUniforms(gl, program, volren);
+    }
 
     // Select program and vao to configure attributes
     var program = volren.programs.vertexProgram;
     var vao = volren.vaos.vertexVao;
     gl.useProgram(program);
     gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, volren.elementArray);
+
+    uploadUniforms(gl, program, volren.uniforms);
+
+    // FIXME: Setup texture:
+    //uniform sampler2D u_functionGradients;  // Function gradient for each tetrahedron
+
     // FIXME: Go through attributes in shader and double check this:
-    configureAttrib(gl, program, volren.buffers.positions,
+    configureAttrib(gl, program, volren.buffers.position,
         "a_position", 3, gl.FLOAT);
-    configureAttrib(gl, program, volren.buffers.cellIndex,
-        "a_cellIndex", 1, gl.INT);
     configureAttrib(gl, program, volren.buffers.rayLengths,
         "a_rayLengths", 4, gl.FLOAT);
-    configureAttrib(gl, program, volren.buffers.functionValues,
+    configureAttrib(gl, program, volren.buffers.cellIndex,
+        "a_cellIndex", 1, gl.INT);
+    configureAttrib(gl, program, volren.buffers.functionValue,
         "a_functionValue", 1, gl.FLOAT);
-
-    // Upload uniform values
-    var mvp = new Float32Array([
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0,
-    ]);
-    var mvpLocation = gl.getUniformLocation(program, "u_mvp");
-    gl.uniformMatrix4fv(mvpLocation, false, mvp);
-
-    var backgroundColor = new Float32Array([1.0, 1.0, 0.0, 1.0]);
-    var backgroundColorLocation = gl.getUniformLocation(program, "u_backgroundColor");
-    gl.uniform4fv(backgroundColorLocation, backgroundColor);
+    //configureAttrib(gl, program, volren.buffers.functionGradient,
+    //    "a_functionGradient", 3, gl.FLOAT);
 
     // Return context
     return volren;
@@ -802,7 +867,7 @@ function init()
 </head>
 <body onload="init();">
     <canvas id="webgl2canvas" width="800" height="600"></canvas>
-    <div id="shaderdisplay">
+    <div id="shaderdisplay" style="display:none;">
         <h3>shader compile/link errors</h3>
         <pre><code id="shaderCompileErrors">No errors.</code></pre>
     </div>
