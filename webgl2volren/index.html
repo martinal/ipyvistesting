@@ -9,17 +9,21 @@
 </style>
 
 
-<script id="cellShader" type="glsl/vertex-shader">#version 300 es
+<script id="cellShader" type="x-shader/x-vertex">#version 300 es
 precision highp float;
 precision highp int;
 precision highp sampler2D;
 precision highp isampler2D;
 
+// Must be consistent across shaders
+// (TODO: Find a more robust way to configure this)
+#define VERTEX_BITSHIFT 28
+
 // Contains vertex indices for each tetrahedron
 uniform isampler2D u_cells;
 
 // Contains coordinates for each vertex of the tetrahedron mesh
-uniform sampler2D u_coordinates;
+uniform sampler2D u_vertices;
 
 // Contains function values for each vertex of the tetrahedron mesh
 uniform sampler2D u_functionValues;
@@ -33,9 +37,23 @@ uniform vec3 u_cameraPosition;
 // Cell index taken from cell ordering
 in int a_cellIndex;
 
+// Output variable: Packed cell index and local vertex index for each vertex in tetrahedron
+flat out ivec4 f_cellVertIndex;
+
+// Output variable: ray length from vertex to opposing face for each vertex in tetrahedron
+flat out vec4 f_rayLengths;
+
+// Output variable: function gradient for each tetrahedron
+flat out vec3 f_functionGradient;
+
 ivec2 texelFetchCoord(int index, ivec2 size)
 {
     return ivec2(index / size.x, index % size.x);
+}
+
+uvec2 texelFetchCoord(uint index, uvec2 size)
+{
+    return uvec2(index / size.x, index % size.x);
 }
 
 void main()
@@ -45,15 +63,23 @@ void main()
         texelFetchCoord(a_cellIndex, textureSize(u_cells, 0)),
         0);
 
+    // Pack cell index and local vertex index in one int
+    for (int i=0; i<4; ++i) {
+        f_cellVertIndex[i] = a_cellIndex | (i << VERTEX_BITSHIFT);
+    }
+
     // Get vertex coordinates of cell
-    ivec2 coordsTexSize = textureSize(u_coordinates, 0);
+    ivec2 coordsTexSize = textureSize(u_vertices, 0);
     vec3 coords[4];
-    float functionValues[4];
     for (int i = 0; i < 4; ++i)
     {
         ivec2 indexPos = texelFetchCoord(index[i], coordsTexSize);
-        coords[i] = texelFetch(u_coordinates, indexPos, 0).xyz;
-        functionValues[i] = texelFetch(u_functionValues, indexPos, 0).x;
+        coords[i] = texelFetch(u_vertices, indexPos, 0).xyz;
+    }
+
+    // FIXME: Compute gradient
+    for (int j = 0; j < 3; ++j) {
+        f_functionGradient[j] = 0.0f;
     }
 
     // Compute edge vectors
@@ -89,7 +115,6 @@ void main()
     // Compute ray length vectors holding distances from
     // each vertex to each plane along view direction,
     // only nonzero for vertex i / plane i
-    vec4 t[4];
     for (int i = 0; i < 4; ++i)
     {
         // Arbitrary index on face i
@@ -101,37 +126,38 @@ void main()
         // Normal of opposing face
         vec3 nn = n[i].xyz;
 
-        // Only nonzero for vertex i -> face i
-        t[i] = vec4(0.0f, 0.0f, 0.0f, 0.0f);
-
         // Ray length between vertex i and face i
-        t[i][i] = dot(e[i*4 + i1], nn) / dot(viewDirection, nn);
+        f_rayLengths[i] = dot(e[i*4 + i1], nn) / dot(viewDirection, nn);
     }
-
-    // FIXME: Output cellIndex
-    // FIXME: Output coords
-    // FIXME: Output rayLength
-    // FIXME: Output functionValue
-    // FIXME: Output functionGradient
-    // FIXME: Setup vertex transform buffers and test this
-    // FIXME: Maybe split into more than one shader
 }
 </script>
 
-<script id="vertexShader" type="glsl/vertex-shader">#version 300 es
+<script id="dummyFragmentShader" type="x-shader/x-fragment">#version 300 es
+void main() {}
+</script>
+
+<script id="vertexShader" type="x-shader/x-vertex">#version 300 es
 precision highp float;
 precision highp int;
+precision highp sampler2D;
+precision highp isampler2D;
+
+// Must be consistent across shaders
+// (TODO: Find a more robust way to configure this)
+#define VERTEX_BITSHIFT 28
 
 // Uniforms
-uniform mat4 u_mvp;   // MVP matrix
-uniform sampler2D u_functionGradients;  // Function gradient for each tetrahedron
+uniform mat4 u_mvp;     // MVP matrix
+
+// Texture samplers
+uniform isampler2D u_cells;            // Vertex indices for each tetrahedron
+uniform sampler2D u_vertices;          // Vertex coordinates for each vertex of the tetrahedron mesh
+uniform sampler2D u_functionValues;    // Function values for each vertex of the tetrahedron mesh
+uniform sampler2D u_functionGradients; // Function gradient for each tetrahedron
 
 // Vertex attributes
-in vec3 a_position;          // Position in model space coordinates
-in vec4 a_rayLengths;        // Ray lengths to each face of tetrahedron
-in int a_cellIndex;          // Tetrahedron cell index
-in float a_functionValue;    // Value of function
-//in vec3 a_functionGradient;  // Gradient of f on tetrahedron
+in float a_rayLength;        // Ray lengths to each face of tetrahedron
+in int a_cellVertIndex;      // Packed tetrahedron cell index and local vertex index
 
 // Varyings
 out vec3 v_position;               // Position in model space coordinates
@@ -146,23 +172,39 @@ ivec2 texelFetchCoord(int index, ivec2 size)
 
 void main()
 {
-    // Pass on attributes to be interpolated across front face
-    v_position = a_position;
-    v_rayLengths = a_rayLengths;
+    // Unpack cell index and local vertex index from one int
+    int cellIndex = a_cellVertIndex & (1 << VERTEX_BITSHIFT - 1);
+    int localVertexIndex = a_cellVertIndex >> VERTEX_BITSHIFT;
 
-    v_functionValue = a_functionValue;
-    //v_functionGradient = a_functionGradient;
-    v_functionGradient = texelFetch(u_functionGradients,
-        texelFetchCoord(a_cellIndex, textureSize(u_functionGradients, 0)),
-        0).xyz;
+    // Map index to 2D position for texture lookup
+    ivec2 cellPos = texelFetchCoord(cellIndex,
+        textureSize(u_cells, 0));
+
+    // Get global vertex index
+    int globalVertexIndex = texelFetch(u_cells, cellPos, 0)[localVertexIndex];
+
+    // Map vertex index to 2D position for texture lookup
+    ivec2 vertexPos = texelFetchCoord(globalVertexIndex,
+        textureSize(u_vertices, 0));
+
+    // Fetch position and function value in vertex from textures
+    v_position = texelFetch(u_vertices, vertexPos, 0).xyz;
+    v_functionValue = texelFetch(u_functionValues, vertexPos, 0).x;
+
+    // Get function gradient for this tetrahedron
+    v_functionGradient = texelFetch(u_functionGradients, cellPos, 0).xyz;
+
+    // Place scalar raylength from vertex to opposing
+    // face in the corresponing vector entry
+    v_rayLengths = vec4(0.0f);
+    v_rayLengths[localVertexIndex] = a_rayLength;
 
     // Map vertex coordinate to clip space
-    gl_Position = u_mvp * vec4(a_position, 1.0);
+    gl_Position = u_mvp * vec4(v_position, 1.0);
 }
 </script>
 
-
-<script id="fragmentShader" type="glsl/fragment-shader">#version 300 es
+<script id="fragmentShader" type="x-shader/x-fragment">#version 300 es
 precision highp float;
 precision highp int;
 precision highp sampler2D;
@@ -173,8 +215,11 @@ uniform vec3 u_cameraPosition;
 // Camera view direction with orthographic projection
 //uniform vec3 u_viewDirection;
 
-// Unused?
-uniform vec4 u_backgroundColor;
+// Particle cross section to scale density with to get extinction
+uniform float u_particleCrossSection;
+
+// Min/max values of function, .x=min, .y=max, .z=1/(max-min) or 1 if equal
+uniform vec3 u_functionRange;
 
 // Lookup table for density
 uniform sampler2D u_densityLUT;
@@ -185,19 +230,9 @@ uniform sampler2D u_emissionLUT;
 // Lookup table for emission color (rgb) and density (a)
 //uniform sampler2D u_emissionDensityLUT
 
-// Particle cross section to scale density with to get extinction
-uniform float u_particleCrossSection;
-
-// Min/max values of function, .x=min, .y=max, .z=1/(max-min) or 1 if equal
-uniform vec3 u_functionRange;
-
-// TODO: Get functionGradient by sampling texture instead to save memory?
-//uniform sampler2D u_functionGradient;
-
 // Varyings, interpolated on the rasterized front face currently drawn
 in vec3 v_position;               // Position in model space coordinates
 in vec4 v_rayLengths;             // Ray lengths to each face of tetrahedron
-//flat in int v_cellIndex;          // Tetrahedron cell index
 in float v_functionValue;         // Value of function
 flat in vec3 v_functionGradient;  // Gradient of f on tetrahedron
 
@@ -217,7 +252,8 @@ vec4 integrate_constant_ray(
     // with blend equation: RGB_src * A_dst + RGB_dst
     float transparency = exp(-depth * extinction);
     float alpha = 1.0f - transparency;
-    return vec4(alpha * emission, alpha);
+    vec4 C = vec4(alpha * emission, alpha);
+    return max(vec4(1.0, 1.0, 1.0, 1.0), C);
 }
 
 float smallestPositive(vec4 lengths)
@@ -312,7 +348,6 @@ void main()
     //vec4 ee = lookup_ee(f, g, u_emissionDensityLUT, u_particleCrossSection);
     //*/
 
-
     // Alternative models:
     // - No lookup, emission and extinction both constant
     // - Lookup only emission, extinction a constant rate
@@ -332,89 +367,89 @@ void main()
 
 
     // Apply piecewise constant ray integration model
-    //fragColor = integrate_constant_ray(depth, emission, extinction);
-    fragColor = vec4(1.0, 0.0, 0.0, 1.0);  // Debugging: Change then vertex shader is done
-
-    // Alternative ray models:
-
-    // - Maximum intensity:
-    //    - I(D) = f( sup_s f(s) )
-    //    - Depth buffer: Off
-    //    - Blend equation: Max(I_src, I_dst)
-    //    - Cell ordering: No
-    //    - Variants:
-    //        - Direct one phase:
-    //             fragColor = u_emissionColor * max(f0, f1);
-    //        - Direct two phase:
-    //             fragColor = max(f0, f1);
-    //             Compose framebuffer with colormap in separate phase
-    //        - Indirect two phase (scalar intensitymap f -> R):
-    //             fragColor = max(intensitymap(f0), intensitymap(f1));
-    //             Compose framebuffer with colormap in separate phase
-    //        - Indirect one phase (saturates color?, colormap f -> rgb):
-    //             fragColor = max(colormap(f0), colormap(f1));
-
-    // - Splatting:
-    //    - I(D) = int_0^D C(f(s)) ds
-    //    - Depth buffer: Off
-    //    - Blend equation: Sum(I_src, I_dst)
-    //    - Cell ordering: No
-    //    - fragColor = depth * texture(u_colormap, vec2(0.5f*(f0+f1), 0.5f)).rgb;
-
-    // - Isosurfaces:
-    //    - Let F = { f_i } be a discrete set of function values
-    //    - Let C(f) be a colormap
-    //    - Visible isosurface fragment is C(f(z)) for closest z where f(z) in F
-    //         I(D) = C( f( sup_s f(s) in F ) )
-    //    - "Arbitrary" number of opaque surfaces using texture:
-    //         isoValue[f0,f1] = first isosurface value in [f0,f1] (closest to f0)
-    //         isoColor[f0,f1] = colormap(isoValue[f0,f1])  // Precomposed
-    //    - What if we want to color with another function?
-    //         I(D) = C( g( sup_s f(s) in F ) )
-    //         isoDist[f0,f1] = distance from f0 (z=0) towards f1 (z=1) of isoValue[f0,f1]
-    //         s = isoDist[f0,f1]
-    //         g = (1-s)*g0 + s*g1
-    //         fragColor = colormap(g)
-    //    - Depth buffer: On
-    //    - Blend equation: Off
-    //    - Cell ordering: No
-    //    - Still need ray length to compute f1
-    //    - Create texture:  u_isosurface[f0, f1] = first isosurface value in [f0,f1]
-    //    - vec4 texel = texture(u_isosurface, vec2(f0, f1));
-    //    - Variants:
-    //        - Isosurface texture precomposed with colormap:
-    //            fragColor = texel;
-    //        - Compose with colormap:
-    //            fragColor = texture(u_colormap, texel.x);
-
-    // - Direct volume rendering:
-    //    - T(s) = exp(-int_s^D tau rho(g(t)) dt)
-    //    - I(D) = I(0) T(0) + int_0^D C(f(s)) rho(g(s)) T(s) ds
-    //    - Depth buffer: Off (can use depth test to preserve opaque background)
-    //    - Blend equation: (1 - A_dst) * I_src + I_dst
-    //    - Cell ordering: Yes
-    //    - Variants: (I), (II), (III) below
-
-    // - (I) Fully piecewise constant emission and extinction (current)
-    //   - Note: If f is also piecewise constant, don't need gradient and f0 == f1
-
-    // - (II) Piecewise linear emission and extinction (Mooreland)
-
-    // - (III) Arbitrary extinction transfer function with 2D texture lookup
-    //   - Assuming piecewise constant C,
-    //        int_0^D C rho exp(-int_s^D A rho dt) ds
-    //        = C int_0^D d/ds exp(-int_s^D A rho dt) ds
-    //        = C (exp(-int_D^D A rho dt) - exp(-int_0^D A rho dt))
-    //        = C (1 - T)
-    //        T = exp(-A int_0^D rho dt)
-    //   - Using f = (1-r)f0 + r f1, r in [0,1]:
-    //        r = t/D,  1-r = 1-t/D,  dr = 1/D dt,  r(t=s) = s/D,  r(t=D) = 1
-    //        U = int_0^D rho(f(t)) dt
-    //          = int_0^D rho( (1 - t/D)*f0 + (t/D)*f1 ) dt
-    //          = D int_0^1 rho( (1-r)*f0 + r*f1 ) dr
-    //   - Preintegrating R(f0,f1) = int_0^1 rho( (1-r)*f0 + r*f1 ) dr
-
+    fragColor = integrate_constant_ray(depth, emission, extinction);
 }
+</script>
+
+<script type="comments">
+// Alternative ray models:
+
+// - Maximum intensity:
+//    - I(D) = f( sup_s f(s) )
+//    - Depth buffer: Off
+//    - Blend equation: Max(I_src, I_dst)
+//    - Cell ordering: No
+//    - Variants:
+//        - Direct one phase:
+//             fragColor = u_emissionColor * max(f0, f1);
+//        - Direct two phase:
+//             fragColor = max(f0, f1);
+//             Compose framebuffer with colormap in separate phase
+//        - Indirect two phase (scalar intensitymap f -> R):
+//             fragColor = max(intensitymap(f0), intensitymap(f1));
+//             Compose framebuffer with colormap in separate phase
+//        - Indirect one phase (saturates color?, colormap f -> rgb):
+//             fragColor = max(colormap(f0), colormap(f1));
+
+// - Splatting:
+//    - I(D) = int_0^D C(f(s)) ds
+//    - Depth buffer: Off
+//    - Blend equation: Sum(I_src, I_dst)
+//    - Cell ordering: No
+//    - fragColor = depth * texture(u_colormap, vec2(0.5f*(f0+f1), 0.5f)).rgb;
+
+// - Isosurfaces:
+//    - Let F = { f_i } be a discrete set of function values
+//    - Let C(f) be a colormap
+//    - Visible isosurface fragment is C(f(z)) for closest z where f(z) in F
+//         I(D) = C( f( sup_s f(s) in F ) )
+//    - "Arbitrary" number of opaque surfaces using texture:
+//         isoValue[f0,f1] = first isosurface value in [f0,f1] (closest to f0)
+//         isoColor[f0,f1] = colormap(isoValue[f0,f1])  // Precomposed
+//    - What if we want to color with another function?
+//         I(D) = C( g( sup_s f(s) in F ) )
+//         isoDist[f0,f1] = distance from f0 (z=0) towards f1 (z=1) of isoValue[f0,f1]
+//         s = isoDist[f0,f1]
+//         g = (1-s)*g0 + s*g1
+//         fragColor = colormap(g)
+//    - Depth buffer: On
+//    - Blend equation: Off
+//    - Cell ordering: No
+//    - Still need ray length to compute f1
+//    - Create texture:  u_isosurface[f0, f1] = first isosurface value in [f0,f1]
+//    - vec4 texel = texture(u_isosurface, vec2(f0, f1));
+//    - Variants:
+//        - Isosurface texture precomposed with colormap:
+//            fragColor = texel;
+//        - Compose with colormap:
+//            fragColor = texture(u_colormap, texel.x);
+
+// - Direct volume rendering:
+//    - T(s) = exp(-int_s^D tau rho(g(t)) dt)
+//    - I(D) = I(0) T(0) + int_0^D C(f(s)) rho(g(s)) T(s) ds
+//    - Depth buffer: Off (can use depth test to preserve opaque background)
+//    - Blend equation: (1 - A_dst) * I_src + I_dst
+//    - Cell ordering: Yes
+//    - Variants: (I), (II), (III) below
+
+// - (I) Fully piecewise constant emission and extinction (current)
+//   - Note: If f is also piecewise constant, don't need gradient and f0 == f1
+
+// - (II) Piecewise linear emission and extinction (Mooreland)
+
+// - (III) Arbitrary extinction transfer function with 2D texture lookup
+//   - Assuming piecewise constant C,
+//        int_0^D C rho exp(-int_s^D A rho dt) ds
+//        = C int_0^D d/ds exp(-int_s^D A rho dt) ds
+//        = C (exp(-int_D^D A rho dt) - exp(-int_0^D A rho dt))
+//        = C (1 - T)
+//        T = exp(-A int_0^D rho dt)
+//   - Using f = (1-r)f0 + r f1, r in [0,1]:
+//        r = t/D,  1-r = 1-t/D,  dr = 1/D dt,  r(t=s) = s/D,  r(t=D) = 1
+//        U = int_0^D rho(f(t)) dt
+//          = int_0^D rho( (1 - t/D)*f0 + (t/D)*f1 ) dt
+//          = D int_0^1 rho( (1-r)*f0 + r*f1 ) dr
+//   - Preintegrating R(f0,f1) = int_0^1 rho( (1-r)*f0 + r*f1 ) dr
 </script>
 
 
@@ -426,7 +461,7 @@ function showCompileError(msg) {
         disp.style.display = "block";
         var elm = document.getElementById("shaderCompileErrors");
         if (!!elm) {
-            elm.innerHTML = msg;
+            elm.textContent = msg;
         }
     }
 }
@@ -488,10 +523,41 @@ function VolumeModel(vertices, cells, cellOrdering, functionValues)
     if (functionValues.length !== this.num_vertices) {
         throw "Invalid dimensions.";
     }
+
+    // Mock lookup tables
+    var lutWidth = 512;
+    this.densityLUT = new Float32Array(lutWidth);
+    this.emissionLUT = new Float32Array(lutWidth);
+    for (var i=0; i<lutWidth; ++i) {
+        s = i / (lutWidth-1);
+        this.densityLUT[i] = 0.3 + 0.7*s;
+        this.emissionLUT[3*i + 0] = s;
+        this.emissionLUT[3*i + 1] = 1.0 - s;
+        this.emissionLUT[3*i + 2] = 0.0;
+    }
 }
 
 // Create test model with unstructured tetrahedral mesh data
-function createTestModel() {
+function createTestModel1() {
+    var vertices = new Float32Array([
+        0.0, 0.0, 0.0,
+        0.0, 0.0, 1.0,
+        0.0, 1.0, 0.0,
+        1.0, 0.0, 0.0,
+    ]);
+    var cells = new Uint32Array([
+        0, 1, 2, 3,
+    ]);
+    var cellOrdering = new Uint32Array([
+        0
+    ]);
+    var functionValues = new Float32Array([
+        1.0, 2.0, 3.0, 4.0
+    ]);
+    return new VolumeModel(vertices, cells, cellOrdering, functionValues);
+}
+
+function createTestModel2() {
     var vertices = new Float32Array([
         0.0, 0.0, 0.0,
         0.0, 0.0, 1.0,
@@ -521,16 +587,7 @@ function setupCellShaderInputs() {
 }
 
 function setupVertexShaderInputs() {
-/*  FIXME: Setup vertex shader uniforms and attributes:
-uniform sampler2D u_functionGradients;  // Function gradient for each tetrahedron
-
-// Vertex attributes
-in vec3 a_position;          // Position in model space coordinates
-in vec4 a_rayLengths;        // Ray lengths to each face of tetrahedron
-in int a_cellIndex;          // Tetrahedron cell index
-in float a_functionValue;    // Value of function
-//in vec3 a_functionGradient;  // Gradient of f on tetrahedron
-*/
+    // FIXME: Setup vertex shader uniforms and attributes:
 }
 
 </script>
@@ -552,12 +609,14 @@ function BufferAttribute(array, itemSize)
 
 // Generate set of shaders  // TODO: Allow configuration
 function generateShaders() {
-    var cellShaderSrc = document.getElementById("cellShader").innerHTML;
-    var vertexShaderSrc = document.getElementById("vertexShader").innerHTML;
-    var fragmentShaderSrc = document.getElementById("fragmentShader").innerHTML;
+    var cellShaderSrc = document.getElementById("cellShader").textContent;
+    var dummyFragmentShaderSrc = document.getElementById("dummyFragmentShader").textContent;
+    var vertexShaderSrc = document.getElementById("vertexShader").textContent;
+    var fragmentShaderSrc = document.getElementById("fragmentShader").textContent;
 
     return {
         cellShaderSrc: cellShaderSrc,
+        dummyFragmentShaderSrc: dummyFragmentShaderSrc,
         vertexShaderSrc: vertexShaderSrc,
         fragmentShaderSrc: fragmentShaderSrc
     };
@@ -566,9 +625,28 @@ function generateShaders() {
 
 // Compile shaders and link programs
 function compilePrograms(gl, shaders) {
+    // Build cell program
     var cellShader = createShader(gl, gl.VERTEX_SHADER, shaders.cellShaderSrc);
-    var cellProgram = 0; //createProgram(gl, cellShader, ...);
+    var dummyFragmentShader = createShader(gl, gl.FRAGMENT_SHADER, shaders.dummyFragmentShaderSrc);
+    // 
+    var program = gl.createProgram();
+    gl.attachShader(program, cellShader);
+    gl.attachShader(program, dummyFragmentShader);
+    gl.transformFeedbackVaryings(program,
+        ["f_cellVertIndex", "f_rayLengths", "f_functionGradient"],
+        gl.SEPARATE_ATTRIBS);
+    gl.linkProgram(program);
+    var success = gl.getProgramParameter(program, gl.LINK_STATUS);
+    if (!success) {
+        var msg = gl.getProgramInfoLog(program);
+        showCompileError(msg);
+        gl.deleteProgram(program);
+        throw "Failed to compile";
+    }
+    //var cellProgram = createProgram(gl, cellShader, dummyFragmentShader);
+    var cellProgram = program;
 
+    // Build vertex program
     var vertexShader = createShader(gl, gl.VERTEX_SHADER, shaders.vertexShaderSrc);
     var fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, shaders.fragmentShaderSrc);
     var vertexProgram = createProgram(gl, vertexShader, fragmentShader);
@@ -619,6 +697,7 @@ function createElementArrayBuffer(gl, num_tetrahedrons) {
     var buffer = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, array, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
     return buffer;
 }
 
@@ -633,15 +712,30 @@ function configureAttrib(gl, program, buffer, name, size, type) {
         console.log("Loc: " + location);
         console.log("GL errors: ");
     }
-    gl.enableVertexAttribArray(location);
-    gl.vertexAttribPointer(location, size, type, false, 0, 0);
+    else {
+        gl.enableVertexAttribArray(location);
+        gl.vertexAttribPointer(location, size, type, false, 0, 0);
+    }
+}
+
+function configureIAttrib(gl, program, buffer, name, size, type) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    var location = gl.getAttribLocation(program, name);
+    if (location < 0) {
+        console.log("Failed to configure attribute:");
+        console.log("WebGL error: " + gl.getError());
+        console.log("Program: " + program);
+        console.log("Name: " + name);
+        console.log("Loc: " + location);
+        console.log("GL errors: ");
+    }
+    else {
+        gl.enableVertexAttribArray(location);
+        gl.vertexAttribIPointer(location, size, type, 0, 0);
+    }
 }
 
 function uploadUniforms(gl, program, uniforms) {
-    var backgroundColorLocation = gl.getUniformLocation(program, "u_backgroundColor");
-    if (backgroundColorLocation != -1)
-        gl.uniform4fv(backgroundColorLocation, uniforms.backgroundColor);
-
     var cameraPositionLocation = gl.getUniformLocation(program, "u_cameraPosition");
     if (cameraPositionLocation != -1)
         gl.uniform3fv(cameraPositionLocation, uniforms.cameraPosition);
@@ -659,8 +753,31 @@ function uploadUniforms(gl, program, uniforms) {
         gl.uniform1f(particleCrossSectionLocation, uniforms.particleCrossSection);
 
     var mvpLocation = gl.getUniformLocation(program, "u_mvp");
-    if (mvpLocation != -1)
+    if (mvpLocation != -1) {
         gl.uniformMatrix4fv(mvpLocation, false, uniforms.mvp);
+    }
+    console.log("Uniform locations:");
+    console.log("cp:" + cameraPositionLocation);
+    console.log("vd:" + viewDirectionLocation);
+    console.log("fr:" + functionRangeLocation);
+    console.log("ps:" + particleCrossSectionLocation);
+    console.log("mv:" + mvpLocation);
+}
+
+// Allocate textures (simplified version, many options not available here)
+function createTexture(gl, unit, buffer, internalFormat, width, height, format, type) {
+    var texture = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, buffer);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, internalFormat, width, height);
+    //gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, width, height, 0, format, type, 0);
+    gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+    return texture;
 }
 
 function setup(gl) {
@@ -668,7 +785,7 @@ function setup(gl) {
     // Configure size and background
     //webglUtils.resizeCanvasToDisplaySize(gl.canvas);
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-    gl.clearColor(0, 0, 0, 0);
+    gl.clearColor(0.8, 0.8, 0.8, 1.0);
 
     // Generate shader sources
     var shaders = generateShaders();
@@ -692,44 +809,29 @@ function setup(gl) {
         rayModel: "dvr",
     };
 
-    volren.model = createTestModel();
-
-    ///////////////////////////////////////////////////////////////////////////
-    /* Things to do:
-
-    - Allocate buffer for float functionValue per vert per cell
-    - Allocate buffer for vec3 functionGradient per cell (use as texture) or per vert per cell (use as vba)
-    - Allocate buffer for vec4 rayLengths per vert per cell
-    - Allocate buffer for uint cellIndex per vert per cell (duplicated from cellOrdering)
-    - Allocate buffer for vec3 position per vert per cell
-    */
-    // Attribute dimensions:
-    /*
-    gl.vertexAttribPointer(functionValueLoc, 1, gl.FLOAT, false, 0, 0);
-    gl.vertexAttribPointer(functionGradientLoc, 3, gl.FLOAT, false, 0, 0);
-    gl.vertexAttribPointer(rayLengthLoc, 4, gl.FLOAT, false, 0, 0);
-    gl.vertexAttribPointer(cellIndexLoc, 1, gl.UINT, false, 0, 0);
-    gl.vertexAttribPointer(positionLoc, 3, gl.FLOAT, false, 0, 0);
-    */
-    ///////////////////////////////////////////////////////////////////////////
+    // Create test model emulating user input
+    volren.model = createTestModel1();
 
     // Create buffers for uploading model to GPU
     var NC = volren.model.num_tetrahedrons;
     var NV = 4 * NC;
+    var NC4b = 4*NC;  // 4 byte value per cell
+    var NV4b = 4*NV;  // 4 byte value per vertex
     volren.buffers = {
         // Upload user provided data (tex_ = texture buffers only, data per original vertex)
         tex_vertices: createAndBufferData(gl, volren.model.vertices, gl.STATIC_DRAW),
         tex_cells: createAndBufferData(gl, volren.model.cells, gl.STATIC_DRAW),
         tex_functionValues: createAndBufferData(gl, volren.model.functionValues, gl.DYNAMIC_DRAW),
-        cellOrdering: createAndBufferData(gl, volren.model.cellOrdering, gl.DYNAMIC_DRAW),
+        cellIndex: createAndBufferData(gl, volren.model.cellOrdering, gl.DYNAMIC_DRAW),
 
         // Allocate space on GPU for cell/vertex attribute buffers without uploading anything
-        functionValue: createSizedBuffer(gl, 4*NV, gl.DYNAMIC_DRAW),
-        tex_functionGradient: createSizedBuffer(gl, 4*3*NC, gl.STATIC_DRAW),
-        //functionGradient: createSizedBuffer(gl, 4*3*NV, gl.DYNAMIC_DRAW),
-        rayLengths: createSizedBuffer(gl, 4*4*NV, gl.DYNAMIC_DRAW),
-        cellIndex: createSizedBuffer(gl, 4*NV, gl.DYNAMIC_DRAW),
-        position: createSizedBuffer(gl, 4*3*NV, gl.DYNAMIC_DRAW),
+        tex_functionGradient: createSizedBuffer(gl, 3*NC4b, gl.STATIC_DRAW),
+        rayLengths: createSizedBuffer(gl, NV4b, gl.DYNAMIC_DRAW),
+        cellVertIndex: createSizedBuffer(gl, NV4b, gl.DYNAMIC_DRAW),
+
+        // Lookup tables
+        tex_densityLUT: createAndBufferData(gl, volren.model.densityLUT, gl.DYNAMIC_DRAW),
+        tex_emissionLUT: createAndBufferData(gl, volren.model.emissionLUT, gl.DYNAMIC_DRAW),
     };
 
     // Build the facet elements buffer
@@ -750,47 +852,105 @@ function setup(gl) {
         functionRange: new Float32Array([0.0, 1.0, 1.0 / (1.0 - 0.0)]),
     };
 
-    // Setup textures FIXME
-    /*
-    uniform sampler2D u_densityLUT;
-    uniform sampler2D u_emissionLUT;
-    uniform sampler2D u_emissionDensityLUT
-    // TODO: Get functionGradient by sampling texture instead to save memory?
-    //uniform sampler2D u_functionGradient;
-    */
+    // FIXME: Compute texture sizes from number of tetrahedrons and vertices
+    //var NC = volren.model.num_tetrahedrons;
+    //var NV = volren.model.num_vertices;
+    var cellTexWidth = 256;
+    var cellTexHeight = 256;
+    var vertexTexWidth = 256;
+    var vertexTexHeight = 256;
+    if (cellTexWidth * cellTexHeight < NC) {
+        throw "Hardcoded texture size is too small.";
+    }
+    if (vertexTexWidth * vertexTexHeight < NV) {
+        throw "Hardcoded texture size is too small.";
+    }
+    var lutWidth = volren.model.densityLUT.length;
 
+    var cellsTexture = createTexture(gl, 0, volren.buffers.tex_cells,
+        gl.R32UI, cellTexWidth, cellTexHeight, gl.RED_INTEGER, gl.UNSIGNED_INT);
+    var verticesTexture = createTexture(gl, 1, volren.buffers.tex_cells,
+        gl.RGB32F, vertexTexWidth, vertexTexHeight, gl.RGB, gl.FLOAT);
+    var functionValuesTexture = createTexture(gl, 2, volren.buffers.tex_functionValues,
+        gl.R32F, vertexTexWidth, vertexTexHeight, gl.RED, gl.FLOAT);
+    var functionGradientTexture = createTexture(gl, 3, volren.buffers.tex_functionGradient,
+        gl.RGB32F, cellTexWidth, cellTexHeight, gl.RGB, gl.FLOAT);
+    var densityTexture = createTexture(gl, 4, volren.buffers.tex_densityLUT,
+        gl.R32F, lutWidth, 1, gl.RED, gl.FLOAT);
+    var emissionTexture = createTexture(gl, 5, volren.buffers.tex_emissionLUT,
+        gl.RGB32F, lutWidth, 1, gl.RGB, gl.FLOAT);
 
     // Setup feedback transform stuff FIXME
-    if (false) {
-        gl.useProgram(volren.programs.cellProgram);
-        gl.bindVertexArray(volren.vaos.cellVao);
-        //gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
-        uploadUniforms(gl, program, volren);
-    }
-
-    // Select program and vao to configure attributes
-    var program = volren.programs.vertexProgram;
-    var vao = volren.vaos.vertexVao;
+    console.log("Configuring cell program...");
+    program = volren.programs.cellProgram;
+    vao = volren.vaos.cellVao;
     gl.useProgram(program);
     gl.bindVertexArray(vao);
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, volren.elementArray);
-
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
     uploadUniforms(gl, program, volren.uniforms);
+    // Configure textures for cell program
+    var cellsTextureLocation = gl.getUniformLocation(program, "u_cells")
+    gl.uniform1i(cellsTextureLocation, 0);
+    var verticesTextureLocation = gl.getUniformLocation(program, "u_vertices")
+    gl.uniform1i(verticesTextureLocation, 1);
+    var functionValuesTextureLocation = gl.getUniformLocation(program, "u_functionValues")
+    gl.uniform1i(functionValuesTextureLocation, 2);
+    // Configure attributes for cell program
+    configureIAttrib(gl, program, volren.buffers.cellIndex,
+            "a_cellIndex", 1, gl.INT);
 
-    // FIXME: Setup texture:
-    //uniform sampler2D u_functionGradients;  // Function gradient for each tetrahedron
+    // FIXME: Configure transform feedback stuff for cell shader
+    var transformFeedback = gl.createTransformFeedback();
+    gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, transformFeedback);
+    gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, volren.buffers.cellVertIndex);
+    gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 1, volren.buffers.rayLengths);
+    gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 2, volren.buffers.tex_functionGradient);
+    gl.enable(gl.RASTERIZER_DISCARD);
+    gl.beginTransformFeedback(gl.POINTS);
+    gl.drawArrays(gl.POINTS, 0, volren.model.num_tetrahedrons);
+    gl.endTransformFeedback();
+    gl.disable(gl.RASTERIZER_DISCARD);
+    gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, null);
+    gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 1, null);
+    gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 2, null);
 
-    // FIXME: Go through attributes in shader and double check this:
-    configureAttrib(gl, program, volren.buffers.position,
-        "a_position", 3, gl.FLOAT);
+    // Select program and vao to configure attributes
+    console.log("Configuring vertex program...");
+    program = volren.programs.vertexProgram;
+    vao = volren.vaos.vertexVao;
+    gl.useProgram(program);
+    gl.bindVertexArray(vao);
+    uploadUniforms(gl, program, volren.uniforms);
+    // Configure textures for vertex program
+    var cellsTextureLocation = gl.getUniformLocation(program, "u_cells")
+    gl.uniform1i(cellsTextureLocation, 0);
+    var verticesTextureLocation = gl.getUniformLocation(program, "u_vertices")
+    gl.uniform1i(verticesTextureLocation, 1);
+    var functionValuesTextureLocation = gl.getUniformLocation(program, "u_functionValues")
+    gl.uniform1i(functionValuesTextureLocation, 2);
+    var functionGradientsTextureLocation = gl.getUniformLocation(program, "u_functionGradients")
+    gl.uniform1i(functionGradientsTextureLocation, 3);
+    var densityLUTTextureLocation = gl.getUniformLocation(program, "u_densityLUT")
+    gl.uniform1i(densityLUTTextureLocation, 4);
+    var emissionLUTTextureLocation = gl.getUniformLocation(program, "u_emissionLUT")
+    gl.uniform1i(emissionLUTTextureLocation, 5);
+    // Configure attributes for vertex program
     configureAttrib(gl, program, volren.buffers.rayLengths,
-        "a_rayLengths", 4, gl.FLOAT);
-    configureAttrib(gl, program, volren.buffers.cellIndex,
-        "a_cellIndex", 1, gl.INT);
-    configureAttrib(gl, program, volren.buffers.functionValue,
-        "a_functionValue", 1, gl.FLOAT);
-    //configureAttrib(gl, program, volren.buffers.functionGradient,
-    //    "a_functionGradient", 3, gl.FLOAT);
+        "a_rayLength", 1, gl.FLOAT);
+    configureIAttrib(gl, program, volren.buffers.cellVertIndex,
+            "a_cellVertIndex", 1, gl.INT);
+
+    console.log("Done configuring programs...");
+
+    // Contents of render():
+    // Draw triangles
+    configureBlendEquation(gl, volren.config.rayModel);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(volren.programs.vertexProgram);
+    gl.bindVertexArray(volren.vaos.vertexVao);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, volren.elementArray);
+    gl.drawElements(gl.TRIANGLE_STRIP, 7 * volren.model.num_tetrahedrons, gl.UNSIGNED_INT, 0);
+
 
     // Return context
     return volren;
@@ -819,6 +979,8 @@ function configureBlendEquation(gl, rayModel) {
 }
 
 function render(volren) {
+    //console.log("Rendering...");
+
     gl = volren.gl;
 
     // Process tetrahedron cells
@@ -831,13 +993,15 @@ function render(volren) {
     gl.bindVertexArray(volren.vaos.vertexVao);
     configureBlendEquation(gl, volren.config.rayModel);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);//4 * volren.model.num_tetrahedrons);
+    gl.drawArrays(gl.TRIANGLES, 0, 4 * volren.model.num_tetrahedrons);
+
+    //console.log("Done rendering...");
 }
 
 function update(volren) {
     // Using global object volren
-    window.requestAnimationFrame(update.bind(null, volren));
-    render(volren);
+    //window.requestAnimationFrame(update.bind(null, volren));
+    //render(volren);
 }
 
 function init()
