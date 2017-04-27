@@ -173,7 +173,7 @@ ivec2 texelFetchCoord(int index, ivec2 size)
 void main()
 {
     // Unpack cell index and local vertex index from one int
-    int cellIndex = a_cellVertIndex & (1 << VERTEX_BITSHIFT - 1);
+    int cellIndex = a_cellVertIndex & ((1 << VERTEX_BITSHIFT) - 1);
     int localVertexIndex = a_cellVertIndex >> VERTEX_BITSHIFT;
 
     // Map index to 2D position for texture lookup
@@ -199,8 +199,19 @@ void main()
     v_rayLengths = vec4(0.0f);
     v_rayLengths[localVertexIndex] = a_rayLength;
 
+#if 1 // Debugging, setting coordinates
+    // Confirms that cellindex and localvertexindex is correct!
+    mat4 mesh = mat4(
+        -1.0, 0.0, 0.0, 0.0,
+        0.0, -1.0, 0.0, 0.0,
+        0.0, 0.0, -1.0, 0.0,
+        0.0, 0.0,  0.0, 0.0
+    );
+    v_position = vec3(0.2*float(cellIndex)) + mesh[localVertexIndex].xyz;
+#endif
+
     // Map vertex coordinate to clip space
-    gl_Position = u_mvp * vec4(v_position, 1.0);
+    gl_Position = u_mvp * vec4(v_position, 1.0f);
 }
 </script>
 
@@ -252,19 +263,22 @@ vec4 integrate_constant_ray(
     // with blend equation: RGB_src * A_dst + RGB_dst
     float transparency = exp(-depth * extinction);
     float alpha = 1.0f - transparency;
-    vec4 C = vec4(alpha * emission, alpha);
-    return max(vec4(1.0, 1.0, 1.0, 1.0), C);
+    return vec4(alpha * emission, alpha);
 }
 
 float smallestPositive(vec4 lengths)
 {
-    const float infinity = 1e38;
-    float depth = infinity;
+    //const float infinity = 1e38f;
+    bool setOnce = false;
+    float depth = 0.0f;
     for (int i = 0; i < 4; ++i)
     {
         if (lengths[i] > 0.0f)
         {
-            depth = min(depth, lengths[i]);
+            if (!setOnce)
+                depth = lengths[i];
+            else
+                depth = min(depth, lengths[i]);
         }
     }
     return depth;
@@ -296,7 +310,8 @@ void main()
 
 
     // Look for smallest positive ray length
-    float depth = smallestPositive(v_rayLengths);
+    float depth = smallestPositive(v_rayLengths);  // FIXME: Returns max float
+    //depth = max(depth, 1.0f);
 
     // Compute function values at entry and exit points of ray
     vec2 f = computeFunctionValues(
@@ -367,7 +382,11 @@ void main()
 
 
     // Apply piecewise constant ray integration model
-    fragColor = integrate_constant_ray(depth, emission, extinction);
+    vec4 C = integrate_constant_ray(depth, emission, extinction);
+    C.r = 1.0f;
+    C.g = 0.0f;
+    C.a = 1.0f;
+    fragColor = C;
 }
 </script>
 
@@ -552,18 +571,18 @@ function createTestModel1() {
         0
     ]);
     var functionValues = new Float32Array([
-        1.0, 2.0, 3.0, 4.0
+        0.1, 0.2, 0.3, 0.4
     ]);
     return new VolumeModel(vertices, cells, cellOrdering, functionValues);
 }
 
 function createTestModel2() {
     var vertices = new Float32Array([
-        0.0, 0.0, 0.0,
-        0.0, 0.0, 1.0,
-        0.0, 1.0, 0.0,
-        1.0, 0.0, 0.0,
-        1.0, 1.0, 1.0,
+        -1.0, 0.0, 0.0,
+        0.0, 0.0, -1.0,
+        0.0, -1.0, 0.0,
+        -1.0, 0.0, 0.0,
+        -1.0, -1.0, -1.0,
     ]);
     var cells = new Uint32Array([
         0, 1, 2, 3,
@@ -573,7 +592,7 @@ function createTestModel2() {
         1, 0
     ]);
     var functionValues = new Float32Array([
-        1.0, 2.0, 3.0, 4.0, 5.0
+        0.1, 0.2, 0.5, 0.8, 1.0
     ]);
     return new VolumeModel(vertices, cells, cellOrdering, functionValues);
 }
@@ -678,8 +697,8 @@ function updateBufferData(gl, buffer, array) {
 
 // Compute the element array indices for one triangle strip for each tetrahedron
 function computeElementArrayIndices(num_tetrahedrons) {
-    var array = new Uint32Array(7 * num_tetrahedrons);
     var strip = new Uint32Array([0,1,2,3,0,1]);
+    var array = new Uint32Array((strip.length + 1) * num_tetrahedrons);
     var primitiveRestartIndex = 0xFFFFFFFF;
     for (var i = 0, celloffset = 0, vertoffset = 0;
          i < num_tetrahedrons;
@@ -687,13 +706,14 @@ function computeElementArrayIndices(num_tetrahedrons) {
     {
         for (var j = 0; j < 6; ++j)
             array[celloffset + j] = vertoffset + strip[j];
-        array[6] = primitiveRestartIndex;
+        array[celloffset + 6] = primitiveRestartIndex;
     }
     return array;
 }
 
 function createElementArrayBuffer(gl, num_tetrahedrons) {
     var array = computeElementArrayIndices(num_tetrahedrons);
+    console.log(array);
     var buffer = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, array, gl.STATIC_DRAW);
@@ -737,31 +757,35 @@ function configureIAttrib(gl, program, buffer, name, size, type) {
 
 function uploadUniforms(gl, program, uniforms) {
     var cameraPositionLocation = gl.getUniformLocation(program, "u_cameraPosition");
-    if (cameraPositionLocation != -1)
+    if (cameraPositionLocation != -1) {
         gl.uniform3fv(cameraPositionLocation, uniforms.cameraPosition);
+    }
 
     var viewDirectionLocation = gl.getUniformLocation(program, "u_viewDirection");
-    if (viewDirectionLocation != -1)
+    if (viewDirectionLocation != -1) {
         gl.uniform3fv(viewDirectionLocation, uniforms.viewDirection);
+    }
 
     var functionRangeLocation = gl.getUniformLocation(program, "u_functionRange");
-    if (functionRangeLocation != -1)
+    if (functionRangeLocation != -1) {
         gl.uniform3fv(functionRangeLocation, uniforms.functionRange);
+    }
 
     var particleCrossSectionLocation = gl.getUniformLocation(program, "u_particleCrossSection");
-    if (particleCrossSectionLocation != -1)
+    if (particleCrossSectionLocation != -1) {
         gl.uniform1f(particleCrossSectionLocation, uniforms.particleCrossSection);
+    }
 
     var mvpLocation = gl.getUniformLocation(program, "u_mvp");
     if (mvpLocation != -1) {
         gl.uniformMatrix4fv(mvpLocation, false, uniforms.mvp);
     }
     console.log("Uniform locations:");
-    console.log("cp:" + cameraPositionLocation);
-    console.log("vd:" + viewDirectionLocation);
-    console.log("fr:" + functionRangeLocation);
-    console.log("ps:" + particleCrossSectionLocation);
-    console.log("mv:" + mvpLocation);
+    console.log("cp:" + cameraPositionLocation + " " + uniforms.cameraPosition);
+    console.log("vd:" + viewDirectionLocation + " " + uniforms.viewDirection);
+    console.log("fr:" + functionRangeLocation + " " + uniforms.functionRange);
+    console.log("ps:" + particleCrossSectionLocation + " " + uniforms.particleCrossSection);
+    console.log("mv:" + mvpLocation + " " + uniforms.mvp);
 }
 
 // Allocate textures (simplified version, many options not available here)
@@ -786,6 +810,8 @@ function setup(gl) {
     //webglUtils.resizeCanvasToDisplaySize(gl.canvas);
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
     gl.clearColor(0.8, 0.8, 0.8, 1.0);
+    gl.enable(gl.BLEND);
+    //gl.enable(gl.DEPTH_TEST);
 
     // Generate shader sources
     var shaders = generateShaders();
@@ -810,7 +836,8 @@ function setup(gl) {
     };
 
     // Create test model emulating user input
-    volren.model = createTestModel1();
+    volren.model = createTestModel2();
+    console.log(volren.model);
 
     // Create buffers for uploading model to GPU
     var NC = volren.model.num_tetrahedrons;
@@ -845,9 +872,8 @@ function setup(gl) {
             0.0, 0.0, 1.0, 0.0,
             0.0, 0.0, 0.0, 1.0,
         ]),
-        cameraPosition: new Float32Array([0.0, 0.0, -10.0]),
+        cameraPosition: new Float32Array([0.0, 0.0, -10.0]),  // FIXME: This is suspect
         viewDirection: new Float32Array([0.0, 0.0, 1.0]),
-        backgroundColor: new Float32Array([1.0, 1.0, 0.0, 1.0]),
         particleCrossSection: 1.0,
         functionRange: new Float32Array([0.0, 1.0, 1.0 / (1.0 - 0.0)]),
     };
@@ -880,7 +906,7 @@ function setup(gl) {
     var emissionTexture = createTexture(gl, 5, volren.buffers.tex_emissionLUT,
         gl.RGB32F, lutWidth, 1, gl.RGB, gl.FLOAT);
 
-    // Setup feedback transform stuff FIXME
+    // Setup feedback transform stuff FIXME: validate
     console.log("Configuring cell program...");
     program = volren.programs.cellProgram;
     vao = volren.vaos.cellVao;
@@ -899,7 +925,7 @@ function setup(gl) {
     configureIAttrib(gl, program, volren.buffers.cellIndex,
             "a_cellIndex", 1, gl.INT);
 
-    // FIXME: Configure transform feedback stuff for cell shader
+    // Configure transform feedback stuff for cell shader FIXME: Validate
     var transformFeedback = gl.createTransformFeedback();
     gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, transformFeedback);
     gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, volren.buffers.cellVertIndex);
@@ -913,6 +939,7 @@ function setup(gl) {
     gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, null);
     gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 1, null);
     gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 2, null);
+    gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
 
     // Select program and vao to configure attributes
     console.log("Configuring vertex program...");
