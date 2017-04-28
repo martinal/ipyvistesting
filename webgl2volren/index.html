@@ -487,10 +487,10 @@ void main()
 <script>
 function showCompileError(msg) {
     console.log(msg);
-    var disp = document.getElementById("shaderdisplay");
+    let disp = document.getElementById("shaderdisplay");
     if (!!disp) {
         disp.style.display = "block";
-        var elm = document.getElementById("shaderCompileErrors");
+        let elm = document.getElementById("shaderCompileErrors");
         if (!!elm) {
             elm.textContent = msg;
         }
@@ -498,28 +498,28 @@ function showCompileError(msg) {
 }
 
 function createShader(gl, type, source) {
-    var shader = gl.createShader(type);
+    let shader = gl.createShader(type);
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    var success = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
+    let success = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
     if (success) {
         return shader;
     }
-    var msg = gl.getShaderInfoLog(shader);
+    let msg = gl.getShaderInfoLog(shader);
     showCompileError(msg);
     gl.deleteShader(shader);
 }
 
 function createProgram(gl, vertexShader, fragmentShader) {
-    var program = gl.createProgram();
+    let program = gl.createProgram();
     gl.attachShader(program, vertexShader);
     gl.attachShader(program, fragmentShader);
     gl.linkProgram(program);
-    var success = gl.getProgramParameter(program, gl.LINK_STATUS);
+    let success = gl.getProgramParameter(program, gl.LINK_STATUS);
     if (success) {
         return program;
     }
-    var msg = gl.getProgramInfoLog(program);
+    let msg = gl.getProgramInfoLog(program);
     showCompileError(msg);
     gl.deleteProgram(program);
 }
@@ -541,7 +541,7 @@ function VolumeModel(vertices, cells, cellOrdering, functionValues)
     this.num_tetrahedrons = Math.floor(cells.length / 4);
     this.num_vertices = Math.floor(vertices.length / 3);
 
-    var num_triangle_vertices = this.num_tetrahedrons * 4;
+    let num_triangle_vertices = this.num_tetrahedrons * 4;
     if (cells.length !== 4 * this.num_tetrahedrons) {
         throw "Invalid dimensions.";
     }
@@ -556,10 +556,10 @@ function VolumeModel(vertices, cells, cellOrdering, functionValues)
     }
 
     // Mock lookup tables
-    var lutWidth = 512;
+    let lutWidth = 512;
     this.densityLUT = new Float32Array(lutWidth);
     this.emissionLUT = new Float32Array(lutWidth);
-    for (var i=0; i<lutWidth; ++i) {
+    for (let i=0; i<lutWidth; ++i) {
         s = i / (lutWidth-1);
         this.densityLUT[i] = 0.3 + 0.7*s;
         this.emissionLUT[3*i + 0] = s;
@@ -570,40 +570,40 @@ function VolumeModel(vertices, cells, cellOrdering, functionValues)
 
 // Create test model with unstructured tetrahedral mesh data
 function createTestModel1() {
-    var vertices = new Float32Array([
+    let vertices = new Float32Array([
         0.0, 0.0, 0.0,
         0.0, 0.0, 1.0,
         0.0, 1.0, 0.0,
         1.0, 0.0, 0.0,
     ]);
-    var cells = new Uint32Array([
+    let cells = new Uint32Array([
         0, 1, 2, 3,
     ]);
-    var cellOrdering = new Uint32Array([
+    let cellOrdering = new Uint32Array([
         0
     ]);
-    var functionValues = new Float32Array([
+    let functionValues = new Float32Array([
         0.1, 0.2, 0.3, 0.4
     ]);
     return new VolumeModel(vertices, cells, cellOrdering, functionValues);
 }
 
 function createTestModel2() {
-    var vertices = new Float32Array([
+    let vertices = new Float32Array([
         -1.0, 0.0, 0.0,
         0.0, 0.0, -1.0,
         0.0, -1.0, 0.0,
         -1.0, 0.0, 0.0,
         -1.0, -1.0, -1.0,
     ]);
-    var cells = new Uint32Array([
+    let cells = new Uint32Array([
         0, 1, 2, 3,
         1, 2, 3, 4,
     ]);
-    var cellOrdering = new Uint32Array([
+    let cellOrdering = new Uint32Array([
         1, 0
     ]);
-    var functionValues = new Float32Array([
+    let functionValues = new Float32Array([
         0.1, 0.2, 0.5, 0.8, 1.0
     ]);
     return new VolumeModel(vertices, cells, cellOrdering, functionValues);
@@ -640,10 +640,10 @@ function BufferAttribute(array, itemSize)
 
 // Generate set of shaders  // TODO: Allow configuration
 function generateShaders() {
-    var cellShaderSrc = document.getElementById("cellShader").textContent;
-    var dummyFragmentShaderSrc = document.getElementById("dummyFragmentShader").textContent;
-    var vertexShaderSrc = document.getElementById("vertexShader").textContent;
-    var fragmentShaderSrc = document.getElementById("fragmentShader").textContent;
+    let cellShaderSrc = document.getElementById("cellShader").textContent;
+    let dummyFragmentShaderSrc = document.getElementById("dummyFragmentShader").textContent;
+    let vertexShaderSrc = document.getElementById("vertexShader").textContent;
+    let fragmentShaderSrc = document.getElementById("fragmentShader").textContent;
 
     return {
         cellShaderSrc: cellShaderSrc,
@@ -657,30 +657,30 @@ function generateShaders() {
 // Compile shaders and link programs
 function compilePrograms(gl, shaders) {
     // Build cell program
-    var cellShader = createShader(gl, gl.VERTEX_SHADER, shaders.cellShaderSrc);
-    var dummyFragmentShader = createShader(gl, gl.FRAGMENT_SHADER, shaders.dummyFragmentShaderSrc);
+    let cellShader = createShader(gl, gl.VERTEX_SHADER, shaders.cellShaderSrc);
+    let dummyFragmentShader = createShader(gl, gl.FRAGMENT_SHADER, shaders.dummyFragmentShaderSrc);
     // 
-    var program = gl.createProgram();
+    let program = gl.createProgram();
     gl.attachShader(program, cellShader);
     gl.attachShader(program, dummyFragmentShader);
     gl.transformFeedbackVaryings(program,
         ["f_cellVertIndex", "f_rayLengths", "f_functionGradient"],
         gl.SEPARATE_ATTRIBS);
     gl.linkProgram(program);
-    var success = gl.getProgramParameter(program, gl.LINK_STATUS);
+    let success = gl.getProgramParameter(program, gl.LINK_STATUS);
     if (!success) {
-        var msg = gl.getProgramInfoLog(program);
+        let msg = gl.getProgramInfoLog(program);
         showCompileError(msg);
         gl.deleteProgram(program);
         throw "Failed to compile";
     }
-    //var cellProgram = createProgram(gl, cellShader, dummyFragmentShader);
-    var cellProgram = program;
+    //let cellProgram = createProgram(gl, cellShader, dummyFragmentShader);
+    let cellProgram = program;
 
     // Build vertex program
-    var vertexShader = createShader(gl, gl.VERTEX_SHADER, shaders.vertexShaderSrc);
-    var fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, shaders.fragmentShaderSrc);
-    var vertexProgram = createProgram(gl, vertexShader, fragmentShader);
+    let vertexShader = createShader(gl, gl.VERTEX_SHADER, shaders.vertexShaderSrc);
+    let fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, shaders.fragmentShaderSrc);
+    let vertexProgram = createProgram(gl, vertexShader, fragmentShader);
 
     return {
         cellProgram: cellProgram,
@@ -689,14 +689,14 @@ function compilePrograms(gl, shaders) {
 }
 
 function createSizedBuffer(gl, size, usage) {
-    var buffer = gl.createBuffer();
+    let buffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ARRAY_BUFFER, size, usage);
     return buffer;
 }
 
 function createAndBufferData(gl, array, usage) {
-    var buffer = gl.createBuffer();
+    let buffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ARRAY_BUFFER, array, usage);
     return buffer;
@@ -709,14 +709,14 @@ function updateBufferData(gl, buffer, array) {
 
 // Compute the element array indices for one triangle strip for each tetrahedron
 function computeElementArrayIndices(num_tetrahedrons) {
-    var strip = new Uint32Array([0,1,2,3,0,1]);
-    var array = new Uint32Array((strip.length + 1) * num_tetrahedrons);
-    var primitiveRestartIndex = 0xFFFFFFFF;
-    for (var i = 0, celloffset = 0, vertoffset = 0;
+    let strip = new Uint32Array([0,1,2,3,0,1]);
+    let array = new Uint32Array((strip.length + 1) * num_tetrahedrons);
+    let primitiveRestartIndex = 0xFFFFFFFF;
+    for (let i = 0, celloffset = 0, vertoffset = 0;
          i < num_tetrahedrons;
          ++i, celloffset += 7, vertoffset += 4)
     {
-        for (var j = 0; j < 6; ++j)
+        for (let j = 0; j < 6; ++j)
             array[celloffset + j] = vertoffset + strip[j];
         array[celloffset + 6] = primitiveRestartIndex;
     }
@@ -724,9 +724,9 @@ function computeElementArrayIndices(num_tetrahedrons) {
 }
 
 function createElementArrayBuffer(gl, num_tetrahedrons) {
-    var array = computeElementArrayIndices(num_tetrahedrons);
+    let array = computeElementArrayIndices(num_tetrahedrons);
     console.log(array);
-    var buffer = gl.createBuffer();
+    let buffer = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, array, gl.STATIC_DRAW);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
@@ -735,7 +735,7 @@ function createElementArrayBuffer(gl, num_tetrahedrons) {
 
 function configureAttrib(gl, program, buffer, name, size, type) {
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    var location = gl.getAttribLocation(program, name);
+    let location = gl.getAttribLocation(program, name);
     if (location < 0) {
         console.log("Failed to configure attribute:");
         console.log("WebGL error: " + gl.getError());
@@ -752,7 +752,7 @@ function configureAttrib(gl, program, buffer, name, size, type) {
 
 function configureIAttrib(gl, program, buffer, name, size, type) {
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    var location = gl.getAttribLocation(program, name);
+    let location = gl.getAttribLocation(program, name);
     if (location < 0) {
         console.log("Failed to configure attribute:");
         console.log("WebGL error: " + gl.getError());
@@ -768,27 +768,27 @@ function configureIAttrib(gl, program, buffer, name, size, type) {
 }
 
 function uploadUniforms(gl, program, uniforms) {
-    var cameraPositionLocation = gl.getUniformLocation(program, "u_cameraPosition");
+    let cameraPositionLocation = gl.getUniformLocation(program, "u_cameraPosition");
     if (cameraPositionLocation != -1) {
         gl.uniform3fv(cameraPositionLocation, uniforms.cameraPosition);
     }
 
-    var viewDirectionLocation = gl.getUniformLocation(program, "u_viewDirection");
+    let viewDirectionLocation = gl.getUniformLocation(program, "u_viewDirection");
     if (viewDirectionLocation != -1) {
         gl.uniform3fv(viewDirectionLocation, uniforms.viewDirection);
     }
 
-    var functionRangeLocation = gl.getUniformLocation(program, "u_functionRange");
+    let functionRangeLocation = gl.getUniformLocation(program, "u_functionRange");
     if (functionRangeLocation != -1) {
         gl.uniform3fv(functionRangeLocation, uniforms.functionRange);
     }
 
-    var particleCrossSectionLocation = gl.getUniformLocation(program, "u_particleCrossSection");
+    let particleCrossSectionLocation = gl.getUniformLocation(program, "u_particleCrossSection");
     if (particleCrossSectionLocation != -1) {
         gl.uniform1f(particleCrossSectionLocation, uniforms.particleCrossSection);
     }
 
-    var mvpLocation = gl.getUniformLocation(program, "u_mvp");
+    let mvpLocation = gl.getUniformLocation(program, "u_mvp");
     if (mvpLocation != -1) {
         gl.uniformMatrix4fv(mvpLocation, false, uniforms.mvp);
     }
@@ -802,7 +802,7 @@ function uploadUniforms(gl, program, uniforms) {
 
 // Allocate textures (simplified version, many options not available here)
 function createTexture(gl, unit, buffer, internalFormat, width, height, format, type) {
-    var texture = gl.createTexture();
+    let texture = gl.createTexture();
     gl.activeTexture(gl.TEXTURE0 + unit);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -826,20 +826,20 @@ function setup(gl) {
     //gl.enable(gl.DEPTH_TEST);
 
     // Generate shader sources
-    var shaders = generateShaders();
+    let shaders = generateShaders();
 
     // Compile programs
-    var programs = compilePrograms(gl, shaders);
+    let programs = compilePrograms(gl, shaders);
 
     // Create VAOs for each program
-    var vaos = {
+    let vaos = {
         cellVao: gl.createVertexArray(),
         vertexVao: gl.createVertexArray()
     };
 
     // Collect state in global volren object
     // (for now, figure out better design later)
-    var volren = {}
+    let volren = {}
     volren.gl = gl;
     volren.programs = programs;
     volren.vaos = vaos;
@@ -852,10 +852,10 @@ function setup(gl) {
     console.log(volren.model);
 
     // Create buffers for uploading model to GPU
-    var NC = volren.model.num_tetrahedrons;
-    var NV = 4 * NC;
-    var NC4b = 4*NC;  // 4 byte value per cell
-    var NV4b = 4*NV;  // 4 byte value per vertex
+    let NC = volren.model.num_tetrahedrons;
+    let NV = 4 * NC;
+    let NC4b = 4*NC;  // 4 byte value per cell
+    let NV4b = 4*NV;  // 4 byte value per vertex
     volren.buffers = {
         // Upload user provided data (tex_ = texture buffers only, data per original vertex)
         tex_vertices: createAndBufferData(gl, volren.model.vertices, gl.STATIC_DRAW),
@@ -891,31 +891,31 @@ function setup(gl) {
     };
 
     // FIXME: Compute texture sizes from number of tetrahedrons and vertices
-    //var NC = volren.model.num_tetrahedrons;
-    //var NV = volren.model.num_vertices;
-    var cellTexWidth = 256;
-    var cellTexHeight = 256;
-    var vertexTexWidth = 256;
-    var vertexTexHeight = 256;
+    //let NC = volren.model.num_tetrahedrons;
+    //let NV = volren.model.num_vertices;
+    let cellTexWidth = 256;
+    let cellTexHeight = 256;
+    let vertexTexWidth = 256;
+    let vertexTexHeight = 256;
     if (cellTexWidth * cellTexHeight < NC) {
         throw "Hardcoded texture size is too small.";
     }
     if (vertexTexWidth * vertexTexHeight < NV) {
         throw "Hardcoded texture size is too small.";
     }
-    var lutWidth = volren.model.densityLUT.length;
+    let lutWidth = volren.model.densityLUT.length;
 
-    var cellsTexture = createTexture(gl, 0, volren.buffers.tex_cells,
+    let cellsTexture = createTexture(gl, 0, volren.buffers.tex_cells,
         gl.R32UI, cellTexWidth, cellTexHeight, gl.RED_INTEGER, gl.UNSIGNED_INT);
-    var verticesTexture = createTexture(gl, 1, volren.buffers.tex_cells,
+    let verticesTexture = createTexture(gl, 1, volren.buffers.tex_cells,
         gl.RGB32F, vertexTexWidth, vertexTexHeight, gl.RGB, gl.FLOAT);
-    var functionValuesTexture = createTexture(gl, 2, volren.buffers.tex_functionValues,
+    let functionValuesTexture = createTexture(gl, 2, volren.buffers.tex_functionValues,
         gl.R32F, vertexTexWidth, vertexTexHeight, gl.RED, gl.FLOAT);
-    var functionGradientTexture = createTexture(gl, 3, volren.buffers.tex_functionGradient,
+    let functionGradientTexture = createTexture(gl, 3, volren.buffers.tex_functionGradient,
         gl.RGB32F, cellTexWidth, cellTexHeight, gl.RGB, gl.FLOAT);
-    var densityTexture = createTexture(gl, 4, volren.buffers.tex_densityLUT,
+    let densityTexture = createTexture(gl, 4, volren.buffers.tex_densityLUT,
         gl.R32F, lutWidth, 1, gl.RED, gl.FLOAT);
-    var emissionTexture = createTexture(gl, 5, volren.buffers.tex_emissionLUT,
+    let emissionTexture = createTexture(gl, 5, volren.buffers.tex_emissionLUT,
         gl.RGB32F, lutWidth, 1, gl.RGB, gl.FLOAT);
 
     // Setup feedback transform stuff FIXME: validate
@@ -927,18 +927,18 @@ function setup(gl) {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
     uploadUniforms(gl, program, volren.uniforms);
     // Configure textures for cell program
-    var cellsTextureLocation = gl.getUniformLocation(program, "u_cells")
-    gl.uniform1i(cellsTextureLocation, 0);
-    var verticesTextureLocation = gl.getUniformLocation(program, "u_vertices")
+    let cellsTextureLocation2 = gl.getUniformLocation(program, "u_cells")
+    gl.uniform1i(cellsTextureLocation2, 0);
+    let verticesTextureLocation = gl.getUniformLocation(program, "u_vertices")
     gl.uniform1i(verticesTextureLocation, 1);
-    var functionValuesTextureLocation = gl.getUniformLocation(program, "u_functionValues")
+    let functionValuesTextureLocation = gl.getUniformLocation(program, "u_functionValues")
     gl.uniform1i(functionValuesTextureLocation, 2);
     // Configure attributes for cell program
     configureIAttrib(gl, program, volren.buffers.cellIndex,
             "a_cellIndex", 1, gl.INT);
 
     // Configure transform feedback stuff for cell shader FIXME: Validate
-    var transformFeedback = gl.createTransformFeedback();
+    let transformFeedback = gl.createTransformFeedback();
     gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, transformFeedback);
     gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, volren.buffers.cellVertIndex);
     gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 1, volren.buffers.rayLengths);
@@ -961,17 +961,17 @@ function setup(gl) {
     gl.bindVertexArray(vao);
     uploadUniforms(gl, program, volren.uniforms);
     // Configure textures for vertex program
-    var cellsTextureLocation = gl.getUniformLocation(program, "u_cells")
+    let cellsTextureLocation = gl.getUniformLocation(program, "u_cells")
     gl.uniform1i(cellsTextureLocation, 0);
-    var verticesTextureLocation = gl.getUniformLocation(program, "u_vertices")
-    gl.uniform1i(verticesTextureLocation, 1);
-    var functionValuesTextureLocation = gl.getUniformLocation(program, "u_functionValues")
-    gl.uniform1i(functionValuesTextureLocation, 2);
-    var functionGradientsTextureLocation = gl.getUniformLocation(program, "u_functionGradients")
+    let verticesTextureLocation2 = gl.getUniformLocation(program, "u_vertices")
+    gl.uniform1i(verticesTextureLocation2, 1);
+    let functionValuesTextureLocation2 = gl.getUniformLocation(program, "u_functionValues")
+    gl.uniform1i(functionValuesTextureLocation2, 2);
+    let functionGradientsTextureLocation = gl.getUniformLocation(program, "u_functionGradients")
     gl.uniform1i(functionGradientsTextureLocation, 3);
-    var densityLUTTextureLocation = gl.getUniformLocation(program, "u_densityLUT")
+    let densityLUTTextureLocation = gl.getUniformLocation(program, "u_densityLUT")
     gl.uniform1i(densityLUTTextureLocation, 4);
-    var emissionLUTTextureLocation = gl.getUniformLocation(program, "u_emissionLUT")
+    let emissionLUTTextureLocation = gl.getUniformLocation(program, "u_emissionLUT")
     gl.uniform1i(emissionLUTTextureLocation, 5);
     // Configure attributes for vertex program
     configureAttrib(gl, program, volren.buffers.rayLengths,
@@ -1045,8 +1045,8 @@ function update(volren) {
 
 function init()
 {
-    var canvas = document.getElementById("webgl2canvas");
-    var gl = canvas.getContext("webgl2", {
+    let canvas = document.getElementById("webgl2canvas");
+    let gl = canvas.getContext("webgl2", {
         antialias: false,
         depth: false,
         alpha: true,
@@ -1060,7 +1060,7 @@ function init()
     }
 
     // Initial gl setup
-    var volren = setup(gl);
+    let volren = setup(gl);
 
     // Start updates
     update(volren);
