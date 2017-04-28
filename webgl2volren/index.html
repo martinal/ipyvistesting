@@ -56,64 +56,14 @@ uvec2 texelFetchCoord(uint index, uvec2 size)
     return uvec2(index / size.x, index % size.x);
 }
 
-vec4 computeRayLengths(vec3 coords[4], vec3 cameraPosition, vec4 n[4])
+// Compute normals and plane equation coefficients
+mat4 computePlaneEquations(vec3 coords[4])
 {
-    // Compute ray length vectors holding distances from
-    // each vertex to each plane along view direction,
-    // only nonzero for vertex i / plane i
-    vec4 rayLengths;
-    for (int i = 0; i < 4; ++i)
-    {
-        // Arbitrary index on face i
-        int i1 = (i + 1) & 3;
-
-        // View direction through vertex i for perspective projected camera
-        vec3 viewDirection = normalize(coords[i] - cameraPosition);
-
-        // Normal of opposing face
-        vec3 nn = n[i].xyz;
-
-        // One of the edge vectors from vertex i towards a vertex on face i
-        vec3 edge = coords[i1] - coords[i];
-
-        // Ray length between vertex i and face i
-        rayLengths[i] = dot(edge, nn) / dot(viewDirection, nn);
-    }
-    return rayLengths;
-}
-
-void main()
-{
-    // Get vertex indices of cell
-    ivec4 index = texelFetch(u_cells,
-        texelFetchCoord(a_cellIndex, textureSize(u_cells, 0)),
-        0);
-
-    // Pack cell index and local vertex index in one int
-    for (int i=0; i<4; ++i) {
-        f_cellVertIndex[i] = a_cellIndex | (i << VERTEX_BITSHIFT);
-    }
-
-    // Get vertex coordinates of cell
-    ivec2 coordsTexSize = textureSize(u_vertices, 0);
-    vec3 coords[4];
-    for (int i = 0; i < 4; ++i)
-    {
-        ivec2 indexPos = texelFetchCoord(index[i], coordsTexSize);
-        coords[i] = texelFetch(u_vertices, indexPos, 0).xyz;
-    }
-
-    // FIXME: Compute gradient
-    for (int j = 0; j < 3; ++j) {
-        f_functionGradient[j] = 0.0f;
-    }
-
-    // Compute normals and plane equation coefficients
     // FIXME: Debug, quickly written and probably not correct
     // TODO: We'll need to guarantee the orientation of the
     // tetrahedrons for the strips to work, so we can do
     // this in a smarter way
-    vec4 n[4];
+    mat4 N;
     for (int i = 0; i < 4; ++i)
     {
         // Indices of face i
@@ -137,10 +87,63 @@ void main()
         float planeDistance = dot(nn, coords[i1]);
 
         // Store plane equation for face i
-        n[i] = vec4(nn, planeDistance);
+        N[i] = vec4(nn, planeDistance);
+    }
+    return N;
+}
+
+// Compute ray length vectors holding distances from
+// each vertex to the opposing plane along view direction.
+vec4 computeRayLengths(vec3 coords[4], vec3 cameraPosition, mat4 N)
+{
+    vec4 rayLengths;
+    for (int i = 0; i < 4; ++i)
+    {
+        // Arbitrary index on face i
+        int i1 = (i + 1) & 3;
+
+        // Normal of opposing face
+        vec3 nn = N[i].xyz;
+
+        // One of the edge vectors from vertex i towards a vertex on face i
+        vec3 edge = coords[i1] - coords[i];
+
+        // View direction through vertex i for perspective projected camera
+        vec3 viewDirection = normalize(coords[i] - cameraPosition);
+
+        // Ray length between vertex i and face i
+        rayLengths[i] = dot(edge, nn) / dot(viewDirection, nn);
+    }
+    return rayLengths;
+}
+
+void main()
+{
+    // Get vertex indices of cell
+    ivec2 cellPos = texelFetchCoord(a_cellIndex, textureSize(u_cells, 0));
+    ivec4 index = texelFetch(u_cells, cellPos, 0);
+
+    // Pack cell index and local vertex index in one int
+    for (int i = 0; i < 4; ++i) {
+        f_cellVertIndex[i] = a_cellIndex | (i << VERTEX_BITSHIFT);
     }
 
-    f_rayLengths = computeRayLengths(coords, u_cameraPosition, n);
+    // Get vertex coordinates of cell
+    ivec2 coordsTexSize = textureSize(u_vertices, 0);
+    vec3 coords[4];
+    for (int i = 0; i < 4; ++i)
+    {
+        ivec2 indexPos = texelFetchCoord(index[i], coordsTexSize);
+        coords[i] = texelFetch(u_vertices, indexPos, 0).xyz;
+    }
+
+    // FIXME: Compute gradient
+    for (int j = 0; j < 3; ++j) {
+        f_functionGradient[j] = 0.0f;
+    }
+
+    mat4 N = computePlaneEquations(coords);
+    f_rayLengths = computeRayLengths(coords, u_cameraPosition, N);
 }
 </script>
 
@@ -177,6 +180,8 @@ out vec4 v_rayLengths;             // Ray lengths to each face of tetrahedron
 out float v_functionValue;         // Value of function
 flat out vec3 v_functionGradient;  // Gradient of f on tetrahedron
 
+out float v_debug; // Debugging variable
+
 ivec2 texelFetchCoord(int index, ivec2 size)
 {
     return ivec2(index / size.x, index % size.x);
@@ -189,11 +194,18 @@ void main()
     int localVertexIndex = a_cellVertIndex >> VERTEX_BITSHIFT;
 
     // Map index to 2D position for texture lookup
-    ivec2 cellPos = texelFetchCoord(cellIndex,
-        textureSize(u_cells, 0));
+    ivec2 cellPos = texelFetchCoord(cellIndex, textureSize(u_cells, 0));
+
+    // DEBUGGING:
+    // Validated:
+    // cellIndex
+    // localVertexIndex
+    // cellPos
+    // 
 
     // Get global vertex index
-    int globalVertexIndex = texelFetch(u_cells, cellPos, 0)[localVertexIndex];
+    ivec4 verticesOfCell = texelFetch(u_cells, cellPos, 0);
+    int globalVertexIndex = verticesOfCell[localVertexIndex];
 
     // Map vertex index to 2D position for texture lookup
     ivec2 vertexPos = texelFetchCoord(globalVertexIndex,
@@ -212,17 +224,43 @@ void main()
     v_rayLengths[localVertexIndex] = a_rayLength;
 
 #if 1 // Debugging, setting coordinates
-    // Confirms that cellindex and localvertexindex is correct!
-    mat4 mesh = mat4(
-        -1.0, 0.0, 0.0, 0.0,
-        0.0, -1.0, 0.0, 0.0,
-        0.0, 0.0, -1.0, 0.0,
-        0.0, 0.0,  0.0, 0.0
+    vec4 color = vec4(0.0f);
+    color[verticesOfCell[3]] = 1.0f;
+
+    int found = 0;
+    v_debug = 0.0f; //float(globalVertexIndex - localVertexIndex);
+    for (int i=0; i<4; ++i)
+    {
+        // DEBUGGING: This hits 1 time for one vertex and twice for two vertices
+        if (globalVertexIndex == verticesOfCell[i])
+        {
+            found++;
+            v_debug = float(i) / 3.0f;
+        }
+    }
+    if (found == -1)
+        v_debug = 0.0f;
+    v_debug = color[localVertexIndex];
+
+    if (all(equal(verticesOfCell, ivec4(0, 0, 0, 1))))
+        v_debug = 1.0; // this is the case
+    else
+        v_debug = 0.0;
+
+    // Setting position from this mesh confirms that
+    // cellindex and localvertexindex is correct!
+    mat4x3 mesh = mat4x3(
+        -1.0,  0.0, 0.0,
+         0.0, -1.0, 0.0,
+        +1.0,  0.0, 0.0,
+         0.0, +1.0, 1.0
+        //0.5, 0.5, 0.5
     );
     v_position = vec3(0.2*float(cellIndex)) + mesh[localVertexIndex].xyz;
 #endif
 
     // Map vertex coordinate to clip space
+    //gl_Position = vec4(v_position, 1.0f);
     gl_Position = u_mvp * vec4(v_position, 1.0f);
 }
 </script>
@@ -258,6 +296,8 @@ in vec3 v_position;               // Position in model space coordinates
 in vec4 v_rayLengths;             // Ray lengths to each face of tetrahedron
 in float v_functionValue;         // Value of function
 flat in vec3 v_functionGradient;  // Gradient of f on tetrahedron
+
+in float v_debug; // Debugging variable
 
 // Final result
 out vec4 fragColor;
@@ -322,8 +362,8 @@ void main()
 
 
     // Look for smallest positive ray length
-    float depth = smallestPositive(v_rayLengths);  // FIXME: Returns max float
-    //depth = max(depth, 1.0f);
+    float depth = smallestPositive(v_rayLengths); // FIXME: Doesnt seem to work
+
 
     // Compute function values at entry and exit points of ray
     vec2 f = computeFunctionValues(
@@ -395,9 +435,16 @@ void main()
 
     // Apply piecewise constant ray integration model
     vec4 C = integrate_constant_ray(depth, emission, extinction);
-    C.r = 1.0f;
-    C.g = 0.0f;
-    C.a = 1.0f;
+
+    // Debugging:
+    if (depth == 0.0f) {
+        C.r = 0.0f;
+        C.b = 0.0f;
+    }
+    //if (abs(v_debug) > 0.0f) C.g = 1.0f;
+    C.g = v_debug;
+    C.a = 1.0f; // ensure it's not transparent
+
     fragColor = C;
 }
 </script>
@@ -571,7 +618,7 @@ function VolumeModel(vertices, cells, cellOrdering, functionValues)
 // Create test model with unstructured tetrahedral mesh data
 function createTestModel1() {
     let vertices = new Float32Array([
-        0.0, 0.0, 0.0,
+        0.5, 0.5, 0.5,
         0.0, 0.0, 1.0,
         0.0, 1.0, 0.0,
         1.0, 0.0, 0.0,
@@ -723,12 +770,10 @@ function computeElementArrayIndices(num_tetrahedrons) {
     return array;
 }
 
-function createElementArrayBuffer(gl, num_tetrahedrons) {
-    let array = computeElementArrayIndices(num_tetrahedrons);
-    console.log(array);
+function createElementArrayBuffer(gl, elementArray) {
     let buffer = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, array, gl.STATIC_DRAW);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, elementArray, gl.STATIC_DRAW);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
     return buffer;
 }
@@ -746,24 +791,12 @@ function configureAttrib(gl, program, buffer, name, size, type) {
     }
     else {
         gl.enableVertexAttribArray(location);
-        gl.vertexAttribPointer(location, size, type, false, 0, 0);
-    }
-}
-
-function configureIAttrib(gl, program, buffer, name, size, type) {
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    let location = gl.getAttribLocation(program, name);
-    if (location < 0) {
-        console.log("Failed to configure attribute:");
-        console.log("WebGL error: " + gl.getError());
-        console.log("Program: " + program);
-        console.log("Name: " + name);
-        console.log("Loc: " + location);
-        console.log("GL errors: ");
-    }
-    else {
-        gl.enableVertexAttribArray(location);
-        gl.vertexAttribIPointer(location, size, type, 0, 0);
+        if (type === gl.INT || type === gl.UNSIGNED_INT) {
+            gl.vertexAttribIPointer(location, size, type, 0, 0);
+        }
+        else {
+            gl.vertexAttribPointer(location, size, type, false, 0, 0);
+        }
     }
 }
 
@@ -810,8 +843,8 @@ function createTexture(gl, unit, buffer, internalFormat, width, height, format, 
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, buffer);
-    gl.texStorage2D(gl.TEXTURE_2D, 1, internalFormat, width, height);
-    //gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, width, height, 0, format, type, 0);
+    //gl.texStorage2D(gl.TEXTURE_2D, 1, internalFormat, width, height);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, width, height, 0, format, type, 0);
     gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
     return texture;
 }
@@ -848,7 +881,7 @@ function setup(gl) {
     };
 
     // Create test model emulating user input
-    volren.model = createTestModel2();
+    volren.model = createTestModel1();
     console.log(volren.model);
 
     // Create buffers for uploading model to GPU
@@ -874,7 +907,8 @@ function setup(gl) {
     };
 
     // Build the facet elements buffer
-    volren.elementArray = createElementArrayBuffer(gl, NC);
+    volren.elementArray = computeElementArrayIndices(NC);
+    volren.elementArrayBuffer = createElementArrayBuffer(gl, NC, volren.elementArray);
 
     // Define uniforms
     volren.uniforms = {
@@ -934,7 +968,7 @@ function setup(gl) {
     let functionValuesTextureLocation = gl.getUniformLocation(program, "u_functionValues")
     gl.uniform1i(functionValuesTextureLocation, 2);
     // Configure attributes for cell program
-    configureIAttrib(gl, program, volren.buffers.cellIndex,
+    configureAttrib(gl, program, volren.buffers.cellIndex,
             "a_cellIndex", 1, gl.INT);
 
     // Configure transform feedback stuff for cell shader FIXME: Validate
@@ -976,7 +1010,7 @@ function setup(gl) {
     // Configure attributes for vertex program
     configureAttrib(gl, program, volren.buffers.rayLengths,
         "a_rayLength", 1, gl.FLOAT);
-    configureIAttrib(gl, program, volren.buffers.cellVertIndex,
+    configureAttrib(gl, program, volren.buffers.cellVertIndex,
             "a_cellVertIndex", 1, gl.INT);
 
     console.log("Done configuring programs...");
@@ -989,8 +1023,19 @@ function setup(gl) {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(volren.programs.vertexProgram);
     gl.bindVertexArray(volren.vaos.vertexVao);
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, volren.elementArray);
-    gl.drawElements(gl.TRIANGLE_STRIP, 7 * volren.model.num_tetrahedrons, gl.UNSIGNED_INT, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, volren.elementArrayBuffer);
+
+    // DEBUGGING:
+    console.log(volren.elementArray.length);
+    console.log(volren.elementArrayBuffer);
+    console.log(volren.model.num_tetrahedrons + "  " + (7*volren.model.num_tetrahedrons));
+    console.log(volren.elementArray);
+    gl.lineWidth(10.0);
+    gl.drawArrays(gl.LINE_LOOP, 0, 4);
+
+    //gl.drawElements(gl.TRIANGLE_STRIP, 3, gl.UNSIGNED_INT, 0);
+    //gl.drawElements(gl.TRIANGLE_STRIP, volren.elementArray.length, gl.UNSIGNED_INT, 0);
+    //gl.drawElements(gl.TRIANGLE_STRIP, 7 * volren.model.num_tetrahedrons, gl.UNSIGNED_INT, 0);
 
     // Return context
     return volren;
@@ -1001,7 +1046,7 @@ function configureBlendEquation(gl, rayModel) {
     {
     case "dvr":
         gl.blendEquation(gl.FUNC_ADD);
-        gl.blendFunc(gl.ONE_MINUS_DST_ALPHA, gl.ONE);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_DST_ALPHA);
         break;
     case "sum":
         gl.blendEquation(gl.FUNC_ADD);

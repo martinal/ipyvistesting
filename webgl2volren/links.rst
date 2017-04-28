@@ -20,3 +20,4 @@ http://benvanik.github.io/WebGL-Inspector/
 https://github.com/KhronosGroup/WebGLDeveloperTools
 https://github.com/jupyter-widgets/ipywidgets/pull/1302
 
+https://webglstats.com/webgl2/parameter/MAX_ELEMENTS_INDICES
