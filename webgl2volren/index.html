@@ -120,7 +120,8 @@ vec4 computeRayLengths(vec3 coords[4], vec3 cameraPosition, mat4 N)
 void main()
 {
     // Get vertex indices of cell
-    ivec2 cellPos = texelFetchCoord(a_cellIndex, textureSize(u_cells, 0));
+    ivec2 cellsTextureSize = textureSize(u_cells, 0);
+    ivec2 cellPos = texelFetchCoord(a_cellIndex, cellsTextureSize);
     ivec4 index = texelFetch(u_cells, cellPos, 0);
 
     // Pack cell index and local vertex index in one int
@@ -129,11 +130,11 @@ void main()
     }
 
     // Get vertex coordinates of cell
-    ivec2 coordsTexSize = textureSize(u_vertices, 0);
+    ivec2 coordsTextureSize = textureSize(u_vertices, 0);
     vec3 coords[4];
     for (int i = 0; i < 4; ++i)
     {
-        ivec2 indexPos = texelFetchCoord(index[i], coordsTexSize);
+        ivec2 indexPos = texelFetchCoord(index[i], coordsTextureSize);
         coords[i] = texelFetch(u_vertices, indexPos, 0).xyz;
     }
 
@@ -184,6 +185,8 @@ out float v_debug; // Debugging variable
 
 ivec2 texelFetchCoord(int index, ivec2 size)
 {
+    // FIXME: Validate this
+    //return ivec2(index % size.x, index / size.x);
     return ivec2(index / size.x, index % size.x);
 }
 
@@ -194,14 +197,13 @@ void main()
     int localVertexIndex = a_cellVertIndex >> VERTEX_BITSHIFT;
 
     // Map index to 2D position for texture lookup
-    ivec2 cellPos = texelFetchCoord(cellIndex, textureSize(u_cells, 0));
+    ivec2 cellsTextureSize = textureSize(u_cells, 0);
+    ivec2 cellPos = texelFetchCoord(cellIndex, cellsTextureSize);
 
     // DEBUGGING:
     // Validated:
     // cellIndex
     // localVertexIndex
-    // cellPos
-    // 
 
     // Get global vertex index
     ivec4 verticesOfCell = texelFetch(u_cells, cellPos, 0);
@@ -223,32 +225,11 @@ void main()
     v_rayLengths = vec4(0.0f);
     v_rayLengths[localVertexIndex] = a_rayLength;
 
-#if 1 // Debugging, setting coordinates
-    vec4 color = vec4(0.0f);
-    color[verticesOfCell[3]] = 1.0f;
 
-    int found = 0;
-    v_debug = 0.0f; //float(globalVertexIndex - localVertexIndex);
-    for (int i=0; i<4; ++i)
-    {
-        // DEBUGGING: This hits 1 time for one vertex and twice for two vertices
-        if (globalVertexIndex == verticesOfCell[i])
-        {
-            found++;
-            v_debug = float(i) / 3.0f;
-        }
-    }
-    if (found == -1)
-        v_debug = 0.0f;
-    v_debug = color[localVertexIndex];
-
-    if (all(equal(verticesOfCell, ivec4(0, 0, 0, 1))))
-        v_debug = 1.0; // this is the case
-    else
-        v_debug = 0.0;
-
-    // Setting position from this mesh confirms that
-    // cellindex and localvertexindex is correct!
+    // Debugging
+#if 0
+    // Setting position from this "mesh" is guaranteed to be inside the viewport
+    // and the visual result confirms that cellindex and localvertexindex is correct.
     mat4x3 mesh = mat4x3(
         -1.0,  0.0, 0.0,
          0.0, -1.0, 0.0,
@@ -257,6 +238,34 @@ void main()
         //0.5, 0.5, 0.5
     );
     v_position = vec3(0.2*float(cellIndex)) + mesh[localVertexIndex].xyz;
+
+    // All these are correct:
+    v_debug = cellsTextureSize == ivec2(16, 1) ? 1.0: 0.0;  // true for all vertices
+    v_debug = cellPos == ivec2(0, 0) ? 1.0: 0.0; // true for all vertices
+    v_debug = cellIndex == 0 ? 1.0: 0.0;  // true for all vertices
+    v_debug = localVertexIndex == 0 ? 1.0: 0.0;  // varies 0...3 for vertices
+    v_debug = verticesOfCell == ivec4(0,1,2,3) ? 1.0: 0.0;  // true for all vertices in first cell
+
+    /*
+    int k = 0;  // Changing this from 0..3 shows that...
+    vec4 color = vec4(0.0f);
+    color[k] = 1.0f;
+    v_debug = color[localVertexIndex];  // localVertexIndex is correct
+    */
+
+    /* This is also correct now:
+    int found = 0;
+    v_debug = 0.0f; //float(globalVertexIndex - localVertexIndex);
+    for (int i=0; i<4; ++i)
+    {
+        if (globalVertexIndex == verticesOfCell[i])
+        {
+            found++;
+        }
+    }
+    v_debug = found == 1 ? 1.0f: 0.0f;
+    */
+
 #endif
 
     // Map vertex coordinate to clip space
@@ -605,7 +614,7 @@ function VolumeModel(vertices, cells, cellOrdering, functionValues)
     // Mock lookup tables
     let lutWidth = 512;
     this.densityLUT = new Float32Array(lutWidth);
-    this.emissionLUT = new Float32Array(lutWidth);
+    this.emissionLUT = new Float32Array(3*lutWidth);
     for (let i=0; i<lutWidth; ++i) {
         s = i / (lutWidth-1);
         this.densityLUT[i] = 0.3 + 0.7*s;
@@ -618,13 +627,19 @@ function VolumeModel(vertices, cells, cellOrdering, functionValues)
 // Create test model with unstructured tetrahedral mesh data
 function createTestModel1() {
     let vertices = new Float32Array([
+        -1.0,  0.0, 0.0,
+         0.0, -1.0, 0.0,
+        +1.0,  0.0, 0.0,
+         0.0, +1.0, 1.0
+         /*
         0.5, 0.5, 0.5,
         0.0, 0.0, 1.0,
         0.0, 1.0, 0.0,
         1.0, 0.0, 0.0,
+        */
     ]);
     let cells = new Uint32Array([
-        0, 1, 2, 3,
+        0, 1, 2, 3
     ]);
     let cellOrdering = new Uint32Array([
         0
@@ -749,6 +764,14 @@ function createAndBufferData(gl, array, usage) {
     return buffer;
 }
 
+function createAndBufferTextureData(gl, array, size, usage) {
+    let buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, size, usage);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, array);
+    return buffer;
+}
+
 function updateBufferData(gl, buffer, array) {
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ARRAY_BUFFER, array, usage);
@@ -834,6 +857,30 @@ function uploadUniforms(gl, program, uniforms) {
 }
 
 // Allocate textures (simplified version, many options not available here)
+function createIntegerTexture(gl, unit, buffer, internalFormat, width, height, format, type) {
+    let texture = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+    //gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+    if (0) {
+        //gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32UI, n, n, 0, gl.RG_INTEGER, gl.UNSIGNED_INT, pix)
+    } else {
+        gl.texStorage2D(gl.TEXTURE_2D, 1, internalFormat, width, height);
+        gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, buffer);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, format, type, 0);
+        gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+    }
+
+    return texture;
+}
+
+
+// Allocate textures (simplified version, many options not available here)
 function createTexture(gl, unit, buffer, internalFormat, width, height, format, type) {
     let texture = gl.createTexture();
     gl.activeTexture(gl.TEXTURE0 + unit);
@@ -842,11 +889,42 @@ function createTexture(gl, unit, buffer, internalFormat, width, height, format, 
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, internalFormat, width, height);
     gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, buffer);
-    //gl.texStorage2D(gl.TEXTURE_2D, 1, internalFormat, width, height);
-    gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, width, height, 0, format, type, 0);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, format, type, 0);
     gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
     return texture;
+}
+
+function chooseTextureSize(N) {
+    // Picking the smallest power of 2 (but at least 4) which as the
+    // dimension of square sized texture is large enough to hold N values.
+    // (It might be faster to use some expression similar to
+    // n0 = Math.log2(sqrt(N)) but this loop should work fine
+    // and is arguably easier to read.)
+    let n0 = 0;
+    for (let i = 2; i < 14; ++i) {
+        if (Math.pow(2, 2*i) >= N) {
+            // 2^i squared is a sufficient texture size
+            n0 = Math.pow(2, i);
+            break;
+        }
+    }
+    // Find second dimension sufficient for a rectangular texture
+    let n1 = 0;
+    for (let i = 2; i < 14; ++i) {
+        if (n0 * Math.pow(2, i) >= N) {
+            // n0 x 2^i is a sufficient texture size
+            n1 = Math.pow(2, i);
+            break;
+        }
+    }
+    // TODO: Do something a bit smarter here
+    // Validate our computed dimensions
+    if (n0 * n1 < N) {
+        throw "Computed texture size is too small.";
+    }
+    return [n0, n1];
 }
 
 function setup(gl) {
@@ -885,25 +963,46 @@ function setup(gl) {
     console.log(volren.model);
 
     // Create buffers for uploading model to GPU
+
+    // Compute texture sizes from number of tetrahedrons and vertices
+    //let NC = volren.model.num_tetrahedrons;
+    //let NV = volren.model.num_vertices;
+    let [cellTexWidth, cellTexHeight] = chooseTextureSize(volren.model.num_tetrahedrons);
+    let [vertexTexWidth, vertexTexHeight] = chooseTextureSize(volren.model.num_vertices);
+
+    // FIXME: Need to increase the size of the actual data arrays to upload to texture...
+    cellTexWidth *= cellTexHeight;  cellTexHeight = 1;  // This will only work for small data
+    vertexTexWidth *= vertexTexHeight;  vertexTexHeight = 1;  // This will only work for small data
+
     let NC = volren.model.num_tetrahedrons;
-    let NV = 4 * NC;
-    let NC4b = 4*NC;  // 4 byte value per cell
-    let NV4b = 4*NV;  // 4 byte value per vertex
+    let numCellTexels = cellTexWidth * cellTexHeight;
+    let numVertexTexels = vertexTexWidth * vertexTexHeight;
+    let sz = 4; // sizeof float or int
+
     volren.buffers = {
         // Upload user provided data (tex_ = texture buffers only, data per original vertex)
-        tex_vertices: createAndBufferData(gl, volren.model.vertices, gl.STATIC_DRAW),
-        tex_cells: createAndBufferData(gl, volren.model.cells, gl.STATIC_DRAW),
-        tex_functionValues: createAndBufferData(gl, volren.model.functionValues, gl.DYNAMIC_DRAW),
+        tex_vertices: createAndBufferTextureData(gl, volren.model.vertices,
+            3*numVertexTexels*sz, gl.STATIC_DRAW),
+        tex_cells: createAndBufferTextureData(gl, volren.model.cells,
+            4*numCellTexels*sz, gl.STATIC_DRAW),
+        tex_functionValues: createAndBufferTextureData(gl, volren.model.functionValues,
+            1*numVertexTexels*sz, gl.DYNAMIC_DRAW),
         cellIndex: createAndBufferData(gl, volren.model.cellOrdering, gl.DYNAMIC_DRAW),
 
         // Allocate space on GPU for cell/vertex attribute buffers without uploading anything
-        tex_functionGradient: createSizedBuffer(gl, 3*NC4b, gl.STATIC_DRAW),
-        rayLengths: createSizedBuffer(gl, NV4b, gl.DYNAMIC_DRAW),
-        cellVertIndex: createSizedBuffer(gl, NV4b, gl.DYNAMIC_DRAW),
+        tex_functionGradient: createSizedBuffer(gl,
+            3*numCellTexels*sz, gl.STATIC_DRAW),
+        rayLengths: createSizedBuffer(gl,
+            4*NC*sz, gl.DYNAMIC_DRAW),
+        cellVertIndex: createSizedBuffer(gl,
+            4*NC*sz, gl.DYNAMIC_DRAW),
 
         // Lookup tables
         tex_densityLUT: createAndBufferData(gl, volren.model.densityLUT, gl.DYNAMIC_DRAW),
         tex_emissionLUT: createAndBufferData(gl, volren.model.emissionLUT, gl.DYNAMIC_DRAW),
+    };
+
+    volren.textures = {
     };
 
     // Build the facet elements buffer
@@ -924,29 +1023,17 @@ function setup(gl) {
         functionRange: new Float32Array([0.0, 1.0, 1.0 / (1.0 - 0.0)]),
     };
 
-    // FIXME: Compute texture sizes from number of tetrahedrons and vertices
-    //let NC = volren.model.num_tetrahedrons;
-    //let NV = volren.model.num_vertices;
-    let cellTexWidth = 256;
-    let cellTexHeight = 256;
-    let vertexTexWidth = 256;
-    let vertexTexHeight = 256;
-    if (cellTexWidth * cellTexHeight < NC) {
-        throw "Hardcoded texture size is too small.";
-    }
-    if (vertexTexWidth * vertexTexHeight < NV) {
-        throw "Hardcoded texture size is too small.";
-    }
-    let lutWidth = volren.model.densityLUT.length;
-
-    let cellsTexture = createTexture(gl, 0, volren.buffers.tex_cells,
-        gl.R32UI, cellTexWidth, cellTexHeight, gl.RED_INTEGER, gl.UNSIGNED_INT);
-    let verticesTexture = createTexture(gl, 1, volren.buffers.tex_cells,
+    // Create textures
+    let cellsTexture = createIntegerTexture(gl, 0, volren.buffers.tex_cells,
+        gl.RGBA32UI, cellTexWidth, cellTexHeight, gl.RGBA_INTEGER, gl.UNSIGNED_INT);
+    let verticesTexture = createTexture(gl, 1, volren.buffers.tex_vertices,
         gl.RGB32F, vertexTexWidth, vertexTexHeight, gl.RGB, gl.FLOAT);
     let functionValuesTexture = createTexture(gl, 2, volren.buffers.tex_functionValues,
         gl.R32F, vertexTexWidth, vertexTexHeight, gl.RED, gl.FLOAT);
     let functionGradientTexture = createTexture(gl, 3, volren.buffers.tex_functionGradient,
         gl.RGB32F, cellTexWidth, cellTexHeight, gl.RGB, gl.FLOAT);
+
+    let lutWidth = volren.model.densityLUT.length;
     let densityTexture = createTexture(gl, 4, volren.buffers.tex_densityLUT,
         gl.R32F, lutWidth, 1, gl.RED, gl.FLOAT);
     let emissionTexture = createTexture(gl, 5, volren.buffers.tex_emissionLUT,
@@ -963,10 +1050,10 @@ function setup(gl) {
     // Configure textures for cell program
     let cellsTextureLocation2 = gl.getUniformLocation(program, "u_cells")
     gl.uniform1i(cellsTextureLocation2, 0);
-    let verticesTextureLocation = gl.getUniformLocation(program, "u_vertices")
-    gl.uniform1i(verticesTextureLocation, 1);
-    let functionValuesTextureLocation = gl.getUniformLocation(program, "u_functionValues")
-    gl.uniform1i(functionValuesTextureLocation, 2);
+    let verticesTextureLocation2 = gl.getUniformLocation(program, "u_vertices")
+    gl.uniform1i(verticesTextureLocation2, 1);
+    let functionValuesTextureLocation2 = gl.getUniformLocation(program, "u_functionValues")
+    gl.uniform1i(functionValuesTextureLocation2, 2);
     // Configure attributes for cell program
     configureAttrib(gl, program, volren.buffers.cellIndex,
             "a_cellIndex", 1, gl.INT);
@@ -997,10 +1084,10 @@ function setup(gl) {
     // Configure textures for vertex program
     let cellsTextureLocation = gl.getUniformLocation(program, "u_cells")
     gl.uniform1i(cellsTextureLocation, 0);
-    let verticesTextureLocation2 = gl.getUniformLocation(program, "u_vertices")
-    gl.uniform1i(verticesTextureLocation2, 1);
-    let functionValuesTextureLocation2 = gl.getUniformLocation(program, "u_functionValues")
-    gl.uniform1i(functionValuesTextureLocation2, 2);
+    let verticesTextureLocation = gl.getUniformLocation(program, "u_vertices")
+    gl.uniform1i(verticesTextureLocation, 1);
+    let functionValuesTextureLocation = gl.getUniformLocation(program, "u_functionValues")
+    gl.uniform1i(functionValuesTextureLocation, 2);
     let functionGradientsTextureLocation = gl.getUniformLocation(program, "u_functionGradients")
     gl.uniform1i(functionGradientsTextureLocation, 3);
     let densityLUTTextureLocation = gl.getUniformLocation(program, "u_densityLUT")
@@ -1031,10 +1118,12 @@ function setup(gl) {
     console.log(volren.model.num_tetrahedrons + "  " + (7*volren.model.num_tetrahedrons));
     console.log(volren.elementArray);
     gl.lineWidth(10.0);
-    gl.drawArrays(gl.LINE_LOOP, 0, 4);
+    gl.drawArrays(gl.LINE_LOOP, 0, 4); // FIXME: Only shows line from (-1,0) to (0,0)?
+    //gl.drawElements(gl.LINE_LOOP, 4, gl.UNSIGNED_INT, 0);  // FIXME: Out of bounds?
 
     //gl.drawElements(gl.TRIANGLE_STRIP, 3, gl.UNSIGNED_INT, 0);
     //gl.drawElements(gl.TRIANGLE_STRIP, volren.elementArray.length, gl.UNSIGNED_INT, 0);
+    //gl.drawElements(gl.TRIANGLE_STRIP, 6, gl.UNSIGNED_INT, 0);
     //gl.drawElements(gl.TRIANGLE_STRIP, 7 * volren.model.num_tetrahedrons, gl.UNSIGNED_INT, 0);
 
     // Return context
